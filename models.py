@@ -21,36 +21,16 @@ class ts_corr(nn.Module):
         self.stride = stride
 
     def forward(self, X):
+        batch_size, n, T = X.shape      # (B,特征数,T)
+        unfolded_X = X.unfold(2, self.d, self.stride)
+        # 生成所有特征两两组合的索引，并且每一对只出现一次，不计算特征自己和自己的相关系数。
+        rows, cols = torch.triu_indices(n, n, offset=1, device=X.device)
 
-        # n-特征数量，T-时间窗口
-        batch_size, n, T = X.shape
+        x = unfolded_X[:, rows, :, :]
+        y = unfolded_X[:, cols, :, :]
+        corr = pearsonr(x.flatten(0, 2), y.flatten(0, 2))
 
-        # 初始化输出特征图
-        w = int((T - self.d) / self.stride + 1)
-        h = int(n * (n - 1) / 2)
-        Z = torch.zeros(batch_size, h, w)
-
-        # 遍历每个batch
-        for batch in range(batch_size):
-            # 主窗口：i 确定时间维度位置，j 确定特征维度位置
-            for i in range(w):
-                z = []
-                start = i * self.stride
-                end = start + self.d
-                for j in range(n - 1):
-                    # 主窗口
-                    x = X[batch, j, start:end]
-                    # 剩余窗口
-                    y = X[batch, j + 1:, start:end]
-                    # 计算两个窗口之间的相关系数
-                    broadcasted_x = x.expand(len(y), -1)
-                    r = pearsonr(broadcasted_x, y)
-                    z.append(r)
-
-                # 更新特征图
-                Z[batch, :, i] = torch.cat(z, dim=0).T
-
-        return Z
+        return corr.reshape(batch_size, len(rows), unfolded_X.size(2))
 
 
 class ts_cov(nn.Module):
@@ -64,68 +44,37 @@ class ts_cov(nn.Module):
         self.stride = stride
 
     def forward(self, X):
-        batch_size, n, T = X.shape
-        w = int((T - self.d) / self.stride + 1)
-        h = int(n * (n - 1) / 2)
-        Z = torch.zeros(batch_size, h, w)
-        for batch in range(batch_size):
-            for i in range(w):
-                z = []
-                start = i * self.stride
-                end = start + self.d
-                for j in range(n - 1):
-                    x = X[batch, j, start:end]
-                    y = X[batch, j + 1:, start:end]
-                    x = x.expand(len(y), -1)
-                    x_bar = x.mean(dim=1).unsqueeze(dim=1).expand(y.shape[0], y.shape[1])
-                    y_bar = y.mean(dim=1).unsqueeze(dim=1).expand(y.shape[0], y.shape[1])
-                    cov = torch.sum((x - x_bar) * (y - y_bar), dim=1) / y.shape[1]
-                    z.append(cov)
-                Z[batch, :, i] = torch.cat(z, dim=0).T
-        return Z
+        B, n, T = X.shape
 
+        # [B, n, w, d]
+        unfolded_X = X.unfold(2, self.d, self.stride)
 
-class ts_return(nn.Module):
-    """
-    过去 d 天 X 值构成的时序数列的return
-    """
+        # 特征两两组合
+        rows, cols = torch.triu_indices(
+            n, n, offset=1, device=X.device
+        )
 
-    def __init__(self, d=10, stride=10):
-        """
-        d: 计算窗口的天数
-        stride：计算窗口在时间维度上的进步大小
-        """
-        super(ts_return, self).__init__()
-        self.d = d
-        self.stride = stride
+        # [B, h, w, d]
+        x = unfolded_X[:, rows, :, :]
+        y = unfolded_X[:, cols, :, :]
 
-    def forward(self, X):
+        # 过去 d 天的均值
+        x_mean = torch.mean(x, dim=3, keepdim=True)
+        y_mean = torch.mean(y, dim=3, keepdim=True)
 
-        # n-特征数量，T-时间窗口
-        batch_size, n, T = X.shape
+        # 样本协方差
+        cov = (
+            (x - x_mean) * (y - y_mean)
+        ).sum(dim=3) / (self.d - 1)
 
-        # 初始化输出特征图
-        w = int((T - self.d) / self.stride + 1)
-        Z = torch.zeros(batch_size, n, w)
+        # [B, h, w]
+        return cov
 
-        # 遍历每个batch
-        for batch in range(batch_size):
-            # 窗口：i 确定时间维度位置
-            for i in range(w):
-                start = i * self.stride
-                end = start + self.d
-                x = X[batch, :, start:end]
-                # 计算窗口的return
-                return_d = (x[:, -1] - x[:, 0]) / x[:, 0] - 1
-                # 更新特征图
-                Z[batch, :, i] = return_d
-
-        return Z
 
 
 class ts_stddev(nn.Module):
     """
-    过去 d 天 X 值构成的时序数列的标准差
+    计算过去 d 天 X 值构成的时序数列的标准差
     """
 
     def __init__(self, d=10, stride=10):
@@ -134,22 +83,20 @@ class ts_stddev(nn.Module):
         self.stride = stride
 
     def forward(self, X):
-        batch_size, n, T = X.shape
-        w = int((T - self.d) / self.stride + 1)
-        Z = torch.zeros(batch_size, n, w)
-        for batch in range(batch_size):
-            for i in range(w):
-                start = i * self.stride
-                end = start + self.d
-                x = X[batch, :, start:end]
-                std = torch.std(x, dim=1)
-                Z[batch, :, i] = std
-        return Z
+        # X: [B, n, T]
 
+        # [B, n, w, d]
+        unfolded_X = X.unfold(2, self.d, self.stride)
+
+        # 对每个 d 天窗口计算标准差
+        # 输出：[B, n, w]
+        std = torch.std(unfolded_X, dim=3)
+
+        return std
 
 class ts_zscore(nn.Module):
     """
-    过去 d 天 X 值构成的时序数列的z-score
+    计算过去 d 天 X 值构成的时序数列的平均值除以标准差
     """
 
     def __init__(self, d=10, stride=10):
@@ -158,46 +105,58 @@ class ts_zscore(nn.Module):
         self.stride = stride
 
     def forward(self, X):
-        batch_size, n, T = X.shape
-        w = int((T - self.d) / self.stride + 1)
-        Z = torch.zeros(batch_size, n, w)
-        for batch in range(batch_size):
-            for i in range(w):
-                start = i * self.stride
-                end = start + self.d
-                x = X[batch, :, start:end]
-                z_score = torch.mean(x, dim=1) / torch.std(x, dim=1)
-                Z[batch, :, i] = z_score
-        return Z
+        # X: [B, n, T]
 
+        # [B, n, w, d]
+        unfolded_X = X.unfold(2, self.d, self.stride)
 
+        # [B, n, w]
+        mean = torch.mean(unfolded_X, dim=3)
+        std = torch.std(unfolded_X, dim=3)
+
+        # 防止标准差为0
+        zscore = mean / (std + 1e-8)
+
+        return zscore
+
+class ts_return(nn.Module):
+    def __init__(self, d=10, stride=10):
+        super(ts_return, self).__init__()
+        self.d = d
+        self.stride = stride
+
+    def forward(self, X):
+        unfolded_X = X.unfold(2, self.d, self.stride)
+        return1 = unfolded_X[:, :, :, -1] / (
+            unfolded_X[:, :, :, 0] + 1e-8
+        ) - 1
+
+        return return1
+
+    
 class ts_decaylinear(nn.Module):
-    """
-    过去 d 天 X 值构成的时序数列的加权平均值
-    """
-
     def __init__(self, d=10, stride=10):
         super(ts_decaylinear, self).__init__()
         self.d = d
         self.stride = stride
 
+        # 如下设计的权重系数满足离现在越近的日子权重越大
+        weights = torch.arange(d, 0, -1, dtype=torch.float32)
+        weights = weights / weights.sum()
+
+        # 注册权重，不用在前向传播函数中重复计算
+        self.register_buffer('weights', weights)
+
     def forward(self, X):
-        batch_size, n, T = X.shape
-        w = int((T - self.d) / self.stride + 1)
-        Z = torch.zeros(batch_size, n, w)
+        unfolded_X = X.unfold(2, self.d, self.stride)
 
-        # 权重
-        weights = torch.arange(self.d) + 1
-        normalized_w = weights / torch.sum(weights)
+        # 在时间维度上，将 weights 与 unfolded_X 相乘
+        decaylinear = torch.sum(
+            unfolded_X * self.weights.view(1, 1, 1, -1),
+            dim=-1
+        )
 
-        for batch in range(batch_size):
-            for i in range(w):
-                start = i * self.stride
-                end = start + self.d
-                x = X[batch, :, start:end]
-                weighted_avg = torch.mm(normalized_w.unsqueeze(dim=0), x.T)
-                Z[batch, :, i] = weighted_avg
-        return Z
+        return decaylinear
     
     
 
@@ -242,19 +201,22 @@ class AlphaNet(nn.Module):
         ])
 
         # 池化层（无参数）
-        self.avg_pool = nn.AvgPool1d(d_pool, s_pool)
+        self.avg_pool = nn.AvgPool1d(d_pool, s_pool)    # kernel_size, stride
         self.max_pool = nn.MaxPool1d(d_pool, s_pool)
         
         # 池化层后面接的批量归一化层
         self.batch_norms2 = nn.ModuleList([])
+        # corr和cov 2个特征提取器（会产生h个特征） × 每个提取器3种池化方式
         for _ in range(2):
             for _ in range(3):
                 self.batch_norms2.append(nn.BatchNorm1d(h))
+        # 剩余的5个特征提取器（会产生h个特征） × 每个提取器3种池化方式
         for _ in range(5):
             for _ in range(3):
                 self.batch_norms2.append(nn.BatchNorm1d(n))
 
         # 特征展平并拼接后的总数
+        # 池化不改变特征数量，因此 提取特征 和 池化特征 数量相同
         n_in = 2 * (h*2*3 + n*5*3)
 
         # 线性层，输出层，激活函数，失活函数
@@ -275,34 +237,38 @@ class AlphaNet(nn.Module):
 
 
     def forward(self, X):
-        
+        # X: [B, n, T]; C=h for corr/cov branches, otherwise C=n.
+        # C：不同特征提取算子处理后的特征数量
+        # w: 特征提取后保留的时间窗口数量。
+        # p: 特征在 Avg/Max/Min 池化后保留的时间窗口数量：
+        # w=floor((T-d)/stride)+1, p=floor((w-d_pool)/s_pool)+1.
         features_fe, features_p, i = [], [], 0
         for extractor, batch_norm in zip(self.feature_extractors, self.batch_norms1):
             
             # 特征提取 + 批量归一化 + 展平
-            x = extractor(X)
-            x = batch_norm(x)
-            features_fe.append(x.flatten(start_dim=1))
+            x = extractor(X)                  # [B, C, w]
+            x = batch_norm(x)                 # [B, C, w]
+            features_fe.append(x.flatten(start_dim=1))  # [B, C*w]
             
             # 池化层 + 批量归一化 + 展平
-            x_avg = self.batch_norms2[i](self.avg_pool(x))
-            x_max = self.batch_norms2[i+1](self.max_pool(x))
-            x_min = self.batch_norms2[i+2](-self.max_pool(-x))
-            features_p.append(x_avg.flatten(start_dim=1))
-            features_p.append(x_max.flatten(start_dim=1))
-            features_p.append(x_min.flatten(start_dim=1))
+            x_avg = self.batch_norms2[i](self.avg_pool(x))       # [B, C, p]
+            x_max = self.batch_norms2[i+1](self.max_pool(x))     # [B, C, p]
+            x_min = self.batch_norms2[i+2](-self.max_pool(-x))   # [B, C, p]
+            features_p.append(x_avg.flatten(start_dim=1))        # [B, C*p]
+            features_p.append(x_max.flatten(start_dim=1))        # [B, C*p]
+            features_p.append(x_min.flatten(start_dim=1))        # [B, C*p]
             i += 3
          
         # 残差连接
-        f1 = torch.cat(features_fe, dim=1)
-        f2 = torch.cat(features_p, dim=1)
-        features = torch.cat([f1, f2], dim=1)
+        f1 = torch.cat(features_fe, dim=1)    # [B, w*(2h+5n)]
+        f2 = torch.cat(features_p, dim=1)     # [B, 3p*(2h+5n)]
+        features = torch.cat([f1, f2], dim=1) # [B, (w+3p)*(2h+5n)]
         
         # 线性层 + 激活 + 失活 + 输出层
-        features = self.linear_layer(features)
-        features = self.relu(features)
-        features = self.dropout(features)
-        output = self.output_layer(features)
+        features = self.linear_layer(features)  # [B, 30]
+        features = self.relu(features)          # [B, 30]
+        features = self.dropout(features)       # [B, 30]
+        output = self.output_layer(features)    # [B, 1]
 
         return output
 
