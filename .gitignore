@@ -2,3 +2,6 @@ data/
 scripts/
 baostock_env/
 说明文档/
+*.pyc
+*.ipynb
+*

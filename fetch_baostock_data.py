@@ -107,12 +107,15 @@ def download_raw_data():
     failed_codes = []
     print('A stock count:', len(stocks))
     for code in tqdm(stocks, desc='download stock daily'):
+        output_path = RAW_DIR / f'{code}.csv'
+        if output_path.exists():
+            continue
         success = False
         for i in range(RETRY_TIMES):
             try:
                 df = get_stock_daily(code)
                 if df is not None:
-                    df.to_csv(RAW_DIR / f'{code}.csv', index=False)
+                    df.to_csv(output_path, index=False)
                     success = True
                     break
             except Exception as e:
