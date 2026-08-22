@@ -18,6 +18,8 @@ import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 from sklearn.preprocessing import StandardScaler
+# 2. 对于每个时间点，根据股票的实际收益对股票进行排名，得到每个股票在收益上的排名值
+
 
 
 device = torch.device("cpu")
@@ -83,7 +85,7 @@ def load_model(model, name):
 # ------------------------------------------------------------------------
 
 # 用前5条数据测试模型是否能正常工作
-net = AlphaNet_v2(d=10, stride=10, n=15)
+net = AlphaNet_v2(d=10, stride=10, n=8)
 net(torch.tensor(X[:5]).float())
 
 # ------------------------------------------------------------------------
@@ -153,7 +155,7 @@ model_name = 'alphanet_v2'
 # 滚动窗口
 for start, valid_start, test_start, end in zip(starts, valid_starts, test_starts, ends):
     # 初始化训练的对象：'alphanet_v2'，'alphanet_att'，'alphanet_v2_fe'
-    net = AlphaNet_v2(d=10, stride=10, n=15)
+    net = AlphaNet_v2(d=10, stride=10, n=8)
 
     # 初始化损失函数和优化器
     criterion = nn.MSELoss(reduction='sum')
@@ -311,30 +313,37 @@ results = []
 # 选择模型：'alphanet_v2'，'alphanet_att'，'alphanet_v2_fe'
 model_name = 'alphanet_v2'
 
-cnt = 0
 
 # 使用每个训练区间的最佳模型，来预测对应区间测试集的收益率，计算IC值
-for start, end in zip(starts, ends):
+for cnt, (cntstart, valid_start, test_start, end) in enumerate(zip(starts, valid_starts, test_starts, ends)):
     
     # 导入模型
     model_path = 'Models/' + model_name + '_' + str(cnt) + '.pt'
-    net = AlphaNet_v2(d=10, stride=10, n=15)
+    net = AlphaNet_v2(d=10, stride=10, n=8)
     load_model(net, model_path)
     
     # 预测 + 验证
-    n = end - start
-    test_res = compute_RankIC(X[start+int(n*9/10):end], Y[start+int(n*9/10):end], net, target_dates[start+int(n*9/10):end])
-    
-    print(model_path,
-          round(100*np.mean(test_res), 2), 
-          round(100*np.std(test_res), 2), 
-          round(np.mean(test_res)/np.std(test_res), 4), 
-          round(100* sum(test_res > 0) / len(test_res), 2))
-    
+    test_res = compute_RankIC(X[test_start:end], Y[test_start:end], net, target_dates[test_start:end])
+
+    mean_ic = np.mean(test_res)
+    std_ic = np.std(test_res)
+    ic_ratio = mean_ic / std_ic if std_ic != 0 else 0
+    positive_ratio = np.sum(test_res > 0) / len(test_res)
+    print(
+        f"Round {cnt}: Mean IC: {mean_ic*100:.4f}%, Std IC: {std_ic:.4f}, IC_IR: {ic_ratio:.4f}, Positive Ratio: {positive_ratio * 100:.4f}%"
+    )
+    # 每个窗口每日RankIC数组
     results.append(test_res)
 
-    with open('test_results_v2.pickle', 'wb') as f:
-        pickle.dump(results, f)
-    
-    cnt += 1
+with open('test_results_v2.pickle', 'wb') as f:
+    pickle.dump(results, f)
+
+all_ic = np.concatenate(results, axis=0)
+
+print("Overall Mean IC:", np.mean(all_ic) * 100, "%")
+print("Overall Std IC:", np.std(all_ic))
+print("Overall IC_IR:", np.mean(all_ic) / np.std(all_ic))
+print("Overall Positive Ratio:", np.mean(all_ic > 0) * 100, "%")
+
+
 
