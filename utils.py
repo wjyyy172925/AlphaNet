@@ -134,6 +134,52 @@ def backtest_topk(signal_df, topk=50):
     return daily_df, calc_performance(daily_df["strategy_ret"])
 
 
+def backtest_group_strategy(signal_df, group_num=10):
+    signal_df = signal_df.copy().dropna(subset=["pred", "next_rn"])
+    group_rows = []
+
+    for date, day_df in signal_df.groupby("date"):
+        day_df = day_df.sort_values("pred", ascending=True).copy()
+        size = len(day_df)
+        if size == 0:
+            continue
+
+        # 将每只股票按预测值从低到高等分成N组，组号越大表示预测值越高
+        day_df["group"] = np.ceil(
+            day_df["pred"].rank(method="first") / (size / group_num)
+        ).astype(int)
+        day_df["group"] = day_df["group"].clip(1, group_num)
+
+        # 某一天每个分组（1到5组）的平均收益率(group，date，group_ret)
+        day_group = day_df.groupby("group", as_index=False)["next_rn"].mean().rename(
+            columns={"next_rn": "group_ret"}
+        )
+        day_group["date"] = date
+        group_rows.append(day_group)
+
+    if not group_rows:
+        empty_group_curve = pd.DataFrame(columns=["date", "group", "group_ret", "group_nav"])
+        empty_strategy_curve = pd.DataFrame(columns=["strategy_ret", "strategy_nav"])
+        return empty_group_curve, empty_strategy_curve, np.nan, calc_performance([])
+
+    group_curve = pd.concat(group_rows, ignore_index=True)
+    group_curve = group_curve.sort_values(["group", "date"]).reset_index(drop=True)
+    group_curve["group_nav"] = group_curve.groupby("group")["group_ret"].transform(
+        lambda x: (1 + x).cumprod()
+    )
+
+    strategy_group = int(group_num)
+    strategy_curve = (
+        group_curve.query("group == @strategy_group")
+        .sort_values("date")
+        .set_index("date")
+        .rename(columns={"group_ret": "strategy_ret"})
+    )
+    strategy_curve["strategy_nav"] = (1 + strategy_curve["strategy_ret"]).cumprod()
+    strategy_stats = calc_performance(strategy_curve["strategy_ret"])
+    return group_curve, strategy_curve, strategy_group, strategy_stats
+
+
 def build_rolling_splits(target_dates, train_window=1500, valid_ratio=0.8, test_window=126, step=126):
     target_dates = np.asarray(target_dates)
     unique_dates = sorted(np.unique(target_dates))

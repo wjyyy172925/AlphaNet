@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 
 from models import AlphaNet_v2
 from utils import (
-    backtest_topk,
+    backtest_group_strategy,
     build_rolling_splits,
     build_signal_frame,
     calc_performance,
@@ -31,13 +31,15 @@ print("Shape of Y:", Y.shape)
 target_dates = to_date_array(dates)
 splits = build_rolling_splits(target_dates)
 
-topk = 50
+group_num = 10
 model_name = "alphanet_v2"
 ic_results = []
-topk_results = []
-topk_curves = []
+group_results = []
+group_curves = []
+strategy_curves = []
 cnt = 0
 
+# 遍历所有滚动窗口
 for start, valid_start, test_start, end in splits:
     train_set = myDataset(X[start:valid_start], Y[start:valid_start], is_train=True)
     train_scaler = train_set.get_scaler()
@@ -49,6 +51,8 @@ for start, valid_start, test_start, end in splits:
     load_model(best_net, model_path, device=device)
     test_preds = predict_model(best_net, test_loader, device=device)
 
+    # 每个测试集中所有样本对应的date，code，pred，next_rn(每行一只股票一天)
+    # date只包含测试集中的调仓日期
     signal_df = build_signal_frame(
         test_preds,
         Y[test_start:end],
@@ -58,7 +62,10 @@ for start, valid_start, test_start, end in splits:
 
     daily_ic = compute_daily_ic(signal_df)
     valid_ic = daily_ic[np.isfinite(daily_ic)]
-    daily_curve, strategy_stats = backtest_topk(signal_df, topk=topk)
+    group_curve, strategy_curve, strategy_group, strategy_stats = backtest_group_strategy(
+        signal_df,
+        group_num=group_num,
+    )
 
     mean_ic = valid_ic.mean() if len(valid_ic) else np.nan
     std_ic = valid_ic.std() if len(valid_ic) else np.nan
@@ -70,14 +77,15 @@ for start, valid_start, test_start, end in splits:
         f"IC_IR: {ic_ratio:.4f}, Positive Ratio: {positive_ratio * 100:.4f}%"
     )
     print(
-        f"Round {cnt}: Strategy Annual Return: {strategy_stats['annual_return']:.4f}, "
+        f"Round {cnt}: Strategy Group: {strategy_group}, Strategy Annual Return: {strategy_stats['annual_return']:.4f}, "
         f"Sharpe: {strategy_stats['sharpe_ratio']:.4f}, Max Drawdown: {strategy_stats['max_drawdown']:.4f}"
     )
 
     ic_results.append(valid_ic)
-    topk_results.append(
+    group_results.append(
         {
             "round": cnt,
+            "strategy_group": strategy_group,
             "mean_ic": mean_ic,
             "std_ic": std_ic,
             "ic_ir": ic_ratio,
@@ -88,15 +96,20 @@ for start, valid_start, test_start, end in splits:
             "strategy_max_drawdown": strategy_stats["max_drawdown"],
         }
     )
-    topk_curves.append(daily_curve.reset_index().assign(round=cnt))
+    group_curves.append(group_curve.assign(round=cnt, strategy_group=strategy_group))
+    strategy_curves.append(strategy_curve.reset_index().assign(round=cnt, strategy_group=strategy_group))
     cnt += 1
 
-with open("topk_results_v2.pickle", "wb") as f:
-    pickle.dump(topk_results, f)
+with open("group_results_v2.pickle", "wb") as f:
+    pickle.dump(group_results, f)
 
-if topk_curves:
-    topk_curve_df = pd.concat(topk_curves, ignore_index=True)
-    topk_curve_df.to_csv("topk_curve_v2.csv", index=False)
+if group_curves:
+    group_curve_df = pd.concat(group_curves, ignore_index=True)
+    group_curve_df.to_csv("group_curve_v2.csv", index=False)
+
+if strategy_curves:
+    strategy_curve_df = pd.concat(strategy_curves, ignore_index=True)
+    strategy_curve_df.to_csv("strategy_curve_v2.csv", index=False)
 
 if ic_results:
     all_ic = np.concatenate(ic_results, axis=0)
@@ -105,7 +118,7 @@ if ic_results:
     print("Overall IC_IR:", np.nanmean(all_ic) / np.nanstd(all_ic))
     print("Overall Positive Ratio:", np.mean(all_ic > 0) * 100, "%")
 
-if topk_curves:
-    all_curve = pd.concat(topk_curves, ignore_index=True)
+if strategy_curves:
+    all_curve = pd.concat(strategy_curves, ignore_index=True)
     overall_strategy = calc_performance(all_curve["strategy_ret"])
     print("Overall Strategy Return:", overall_strategy["annual_return"])

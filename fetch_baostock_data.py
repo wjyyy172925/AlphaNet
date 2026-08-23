@@ -16,6 +16,23 @@ FAILED_PATH = Path('failed_codes.csv')
 RETRY_TIMES = 3
 SLEEP_SECONDS = 0.5
 RETRY_SLEEP_SECONDS = 3
+LIMIT_TOLERANCE_PCT = 0.2
+
+RAW_REQUIRED_COLUMNS = {
+    'date',
+    'code',
+    'open',
+    'high',
+    'low',
+    'close',
+    'preclose',
+    'volume',
+    'amount',
+    'turn',
+    'tradestatus',
+    'pctChg',
+    'isST',
+}
 
 
 def login_baostock():
@@ -53,7 +70,10 @@ def get_all_a_stocks():
 
 
 def query_stock_daily(code, adjustflag):
-    fields = 'date,code,open,high,low,close,volume,amount,turn,isST'
+    fields = (
+        'date,code,open,high,low,close,preclose,volume,amount,turn,'
+        'tradestatus,pctChg,isST'
+    )
     rs = bs.query_history_k_data_plus(
         code,
         fields,
@@ -77,9 +97,12 @@ def query_stock_daily(code, adjustflag):
     df['high'] = pd.to_numeric(df['high'], errors='coerce')
     df['low'] = pd.to_numeric(df['low'], errors='coerce')
     df['close'] = pd.to_numeric(df['close'], errors='coerce')
+    df['preclose'] = pd.to_numeric(df['preclose'], errors='coerce')
     df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
     df['amount'] = pd.to_numeric(df['amount'], errors='coerce')
     df['turn'] = pd.to_numeric(df['turn'], errors='coerce')
+    df['tradestatus'] = pd.to_numeric(df['tradestatus'], errors='coerce')
+    df['pctChg'] = pd.to_numeric(df['pctChg'], errors='coerce')
     df['isST'] = pd.to_numeric(df['isST'], errors='coerce')
     return df
 
@@ -90,15 +113,53 @@ def get_stock_daily(code):
     if adj_df is None or raw_df is None:
         return None
     adj_df = adj_df[['code', 'date', 'open', 'high', 'low', 'close', 'isST']]
-    raw_df = raw_df[['code', 'date', 'close', 'volume', 'turn', 'amount']]
+    raw_df = raw_df[
+        [
+            'code',
+            'date',
+            'close',
+            'preclose',
+            'volume',
+            'turn',
+            'amount',
+            'tradestatus',
+            'pctChg',
+            'isST',
+        ]
+    ]
     df = adj_df.merge(raw_df, on=['code', 'date'], how='inner', suffixes=('', '_raw'))
     df = df.sort_values(['code', 'date']).reset_index(drop=True)
     df['return'] = df['close'].pct_change() * 100
     adjust_factor = safe_divide(df['close'], df['close_raw'])
     df['volumn'] = df['volume']
     df['vwap'] = safe_divide(df['amount'], df['volumn']) * adjust_factor
-    df = df[["code", "date", "open", "close", "high", "low", "volumn", "vwap", "return", "turn", "isST"]]
+    df = df[
+        [
+            'code',
+            'date',
+            'open',
+            'close',
+            'high',
+            'low',
+            'volumn',
+            'vwap',
+            'return',
+            'turn',
+            'preclose',
+            'tradestatus',
+            'pctChg',
+            'isST',
+        ]
+    ]
     return df
+
+
+def raw_file_has_required_columns(path):
+    try:
+        columns = set(pd.read_csv(path, nrows=0).columns)
+    except Exception:
+        return False
+    return RAW_REQUIRED_COLUMNS.issubset(columns)
 
 
 def download_raw_data():
@@ -108,7 +169,7 @@ def download_raw_data():
     print('A stock count:', len(stocks))
     for code in tqdm(stocks, desc='download stock daily'):
         output_path = RAW_DIR / f'{code}.csv'
-        if output_path.exists():
+        if output_path.exists() and raw_file_has_required_columns(output_path):
             continue
         success = False
         for i in range(RETRY_TIMES):
@@ -143,13 +204,14 @@ def merge_raw_data():
     return result
 
 
-def get_limit_threshold(code, date):
-    threshold = pd.Series(9.5, index=code.index)
+def get_limit_threshold(code, date, is_st):
+    threshold = pd.Series(10.0, index=code.index, dtype=float)
+    threshold.loc[is_st == 1] = 5.0
     chinext = code.str.startswith(('300', '301')) & (date >= pd.Timestamp('2020-08-24'))
     star = code.str.startswith('688')
     beijing = code.str.endswith('.BJ') & (date >= pd.Timestamp('2021-11-15'))
-    threshold.loc[chinext | star] = 19.5
-    threshold.loc[beijing] = 29.5
+    threshold.loc[chinext | star] = 20.0
+    threshold.loc[beijing] = 30.0
     return threshold
 
 
@@ -158,14 +220,33 @@ def clean_data(df):
     df['date'] = pd.to_datetime(df['date'])
     df = df.drop_duplicates(['code', 'date'])
     df = df.sort_values(['code', 'date']).reset_index(drop=True)
-    df['next_return'] = df.groupby('code')['return'].shift(-1)
-    df['next_date'] = df.groupby('code')['date'].shift(-1)
-    df['next_limit'] = get_limit_threshold(df['code'], df['next_date'])
-    df = df[
+
+    df['limit_pct'] = get_limit_threshold(
+        df['code'],
+        df['date'],
+        df['isST'],
+    )
+    pct_chg = pd.to_numeric(df['pctChg'], errors='coerce')
+    df['is_limit_up'] = (
+        pct_chg >= df['limit_pct'] - LIMIT_TOLERANCE_PCT
+    ).astype('int8')
+    df['is_limit_down'] = (
+        pct_chg <= -df['limit_pct'] + LIMIT_TOLERANCE_PCT
+    ).astype('int8')
+    df['is_suspended'] = (df['tradestatus'] == 0).astype('int8')
+    df['is_tradable'] = (df['tradestatus'] == 1).astype('int8')
+
+    # 买入端避开 ST、停牌和涨停；卖出端保留跌停标记，供回测处理无法卖出的持仓。
+    df['can_buy'] = (
+        (df['is_tradable'] == 1) &
         (df['isST'] != 1) &
-        (df['next_return'].abs() < df['next_limit'])
-    ]
-    df = df.drop(columns=['next_return', 'next_date', 'next_limit', 'isST'])
+        (df['is_limit_up'] == 0)
+    ).astype('int8')
+    df['can_sell'] = (
+        (df['is_tradable'] == 1) &
+        (df['is_limit_down'] == 0)
+    ).astype('int8')
+
     df = df.dropna().reset_index(drop=True)
     df['date'] = df['date'].dt.strftime('%Y-%m-%d')
     return df
