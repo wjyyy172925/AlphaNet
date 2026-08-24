@@ -16,7 +16,9 @@ FAILED_PATH = Path('failed_codes.csv')
 RETRY_TIMES = 3
 SLEEP_SECONDS = 0.5
 RETRY_SLEEP_SECONDS = 3
-LIMIT_TOLERANCE_PCT = 0.2
+LIMIT_TOLERANCE_PCT = 0.5
+
+# BaoStock adjustflag: 1=后复权, 2=前复权, 3=不复权
 
 RAW_REQUIRED_COLUMNS = {
     'date',
@@ -68,7 +70,7 @@ def get_all_a_stocks():
     df = df[df['code'].str.startswith(('sh.6', 'sz.0', 'sz.3'))]
     return df['code'].tolist()
 
-
+# preclose前一日收盘价，amount成交金额，turn换手率（当日成交量占流通股本的比例），tradestatus交易状态(1正常交易 0停牌)，pctChg涨跌幅
 def query_stock_daily(code, adjustflag):
     fields = (
         'date,code,open,high,low,close,preclose,volume,amount,turn,'
@@ -108,49 +110,20 @@ def query_stock_daily(code, adjustflag):
 
 
 def get_stock_daily(code):
-    adj_df = query_stock_daily(code, adjustflag='2')
+    # 后复权
+    adj_df = query_stock_daily(code, adjustflag='1')
+    # 不复权
     raw_df = query_stock_daily(code, adjustflag='3')
     if adj_df is None or raw_df is None:
         return None
-    adj_df = adj_df[['code', 'date', 'open', 'high', 'low', 'close', 'isST']]
-    raw_df = raw_df[
-        [
-            'code',
-            'date',
-            'close',
-            'preclose',
-            'volume',
-            'turn',
-            'amount',
-            'tradestatus',
-            'pctChg',
-            'isST',
-        ]
-    ]
+    adj_df = adj_df[['code', 'date', 'open', 'high', 'low', 'close', 'preclose', 'isST']]
+    raw_df = raw_df[['code', 'date', 'close', 'preclose', 'volume', 'turn', 'amount', 'tradestatus', 'pctChg', 'isST']]
     df = adj_df.merge(raw_df, on=['code', 'date'], how='inner', suffixes=('', '_raw'))
     df = df.sort_values(['code', 'date']).reset_index(drop=True)
-    df['return'] = df['close'].pct_change() * 100
+    df['return'] = (df.groupby('code')['close'].pct_change() * 100)
     adjust_factor = safe_divide(df['close'], df['close_raw'])
-    df['volumn'] = df['volume']
-    df['vwap'] = safe_divide(df['amount'], df['volumn']) * adjust_factor
-    df = df[
-        [
-            'code',
-            'date',
-            'open',
-            'close',
-            'high',
-            'low',
-            'volumn',
-            'vwap',
-            'return',
-            'turn',
-            'preclose',
-            'tradestatus',
-            'pctChg',
-            'isST',
-        ]
-    ]
+    df['vwap'] = safe_divide(df['amount'], df['volume']) * adjust_factor
+    df = df[['code', 'date', 'open', 'close', 'high', 'low', 'volume', 'vwap', 'return', 'turn', 'preclose', 'tradestatus', 'pctChg', 'isST']]
     return df
 
 
@@ -236,7 +209,8 @@ def clean_data(df):
     df['is_suspended'] = (df['tradestatus'] == 0).astype('int8')
     df['is_tradable'] = (df['tradestatus'] == 1).astype('int8')
 
-    # 买入端避开 ST、停牌和涨停；卖出端保留跌停标记，供回测处理无法卖出的持仓。
+    # can_buy: 可买入条件：可交易、非ST、非涨停
+    # can_sell: 可卖出条件：可交易、非跌停
     df['can_buy'] = (
         (df['is_tradable'] == 1) &
         (df['isST'] != 1) &
@@ -247,7 +221,7 @@ def clean_data(df):
         (df['is_limit_down'] == 0)
     ).astype('int8')
 
-    df = df.dropna().reset_index(drop=True)
+    df = df.dropna(subset=['open', 'high', 'low', 'close', 'volume', 'amount', 'pctChg','vwap','turn','return'])
     df['date'] = df['date'].dt.strftime('%Y-%m-%d')
     return df
 
@@ -260,11 +234,11 @@ def add_ratio_features(df):
     df = df.copy()
     df['close_turn'] = safe_divide(df['close'], df['turn'])
     df['open_turn'] = safe_divide(df['open'], df['turn'])
-    df['volumn_low'] = safe_divide(df['volumn'], df['low'])
+    df['volume_low'] = safe_divide(df['volume'], df['low'])
     df['vwap_high'] = safe_divide(df['vwap'], df['high'])
     df['low_high'] = safe_divide(df['low'], df['high'])
     df['vwap_close'] = safe_divide(df['vwap'], df['close'])
-    df['turn_volumn'] = safe_divide(df['turn'], df['volumn'])
+    df['turn_volume'] = safe_divide(df['turn'], df['volume'])
     df = df.dropna().reset_index(drop=True)
     return df
 
