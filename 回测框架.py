@@ -14,12 +14,14 @@ except ImportError:
 
 from models import AlphaNet_v2
 from utils import (
+    apply_tradeability_filter,
     backtest_group_strategy,
     build_rolling_splits,
     build_signal_frame,
     calc_performance,
     load_dataset,
     load_model,
+    load_sample_meta,
     myDataset,
     predict_model,
     to_date_array,
@@ -34,8 +36,12 @@ print("Using CPU.")
 #    X/Y 是模型输入和目标收益，dates/codes 用于还原每个样本的交易日期和股票。
 # ============================================================================
 X, Y, dates, Y_codes = load_dataset(".")
+sample_meta = load_sample_meta(".")
 print("Shape of X:", X.shape)
 print("Shape of Y:", Y.shape)
+
+if sample_meta is not None and len(sample_meta) != len(X):
+    raise ValueError("sample_meta.csv 与 X_fe.npy 样本数不一致")
 
 target_dates = to_date_array(dates)
 splits = build_rolling_splits(target_dates)
@@ -97,17 +103,17 @@ def compute_rank_ic_by_date(signal_df, min_stocks=30):
     records = []
 
     # 只保留预测值和未来收益都有效的股票样本。
-    valid_df = signal_df.dropna(subset=["pred", "next_rn"])
+    valid_df = signal_df.dropna(subset=["pred", "target"])
 
     # RankIC 是逐调仓日计算的截面指标，不跨日期混合股票。
     for date, day_df in valid_df.groupby("date"):
         if len(day_df) < min_stocks:
             continue
-        if day_df["pred"].nunique() < 2 or day_df["next_rn"].nunique() < 2:
+        if day_df["pred"].nunique() < 2 or day_df["target"].nunique() < 2:
             continue
 
         # Spearman 相关系数只使用股票排序，因此适合衡量因子排序能力。
-        rank_ic, _ = stats.spearmanr(day_df["pred"], day_df["next_rn"])
+        rank_ic, _ = stats.spearmanr(day_df["pred"], day_df["target"])
         if np.isfinite(rank_ic):
             records.append(
                 {
@@ -219,7 +225,7 @@ def save_rankic_plots(ic_curve_df, rankic_mean, rankic_std, rankic_ir, positive_
 # ============================================================================
 def compute_top_vs_benchmark(signal_df, n_layers=5, min_stocks_per_layer=10):
     """Compute TOP portfolio return vs equal-weight benchmark by date."""
-    valid_df = signal_df.dropna(subset=["pred", "next_rn"]).copy()
+    valid_df = signal_df.dropna(subset=["pred", "target"]).copy()
     records = []
 
     for date, day_df in valid_df.groupby("date", sort=True):
@@ -234,8 +240,8 @@ def compute_top_vs_benchmark(signal_df, n_layers=5, min_stocks_per_layer=10):
         records.append(
             {
                 "date": date,
-                "top_ret": day_df.iloc[:layer_size]["next_rn"].mean(),
-                "bench_ret": day_df["next_rn"].mean(),
+                "top_ret": day_df.iloc[:layer_size]["target"].mean(),
+                "bench_ret": day_df["target"].mean(),
             }
         )
 
@@ -356,7 +362,7 @@ def layered_test(
         raise ValueError("n_layers must be at least 2")
 
     # 分层回测同样只使用预测值和未来收益均有效的样本。
-    valid_df = signal_df.dropna(subset=["pred", "next_rn"]).copy()
+    valid_df = signal_df.dropna(subset=["pred", "target"]).copy()
     layer_gross_returns = {f"Layer {i + 1}": [] for i in range(n_layers)}
     layer_costs = {f"Layer {i + 1}": [] for i in range(n_layers)}
     layer_dates = []
@@ -377,7 +383,7 @@ def layered_test(
             start_idx = layer_idx * layer_size
             end_idx = start_idx + layer_size if layer_idx < n_layers - 1 else len(day_df)
             layer_df = day_df.iloc[start_idx:end_idx].copy()
-            layer_gross_ret = layer_df["next_rn"].mean()
+            layer_gross_ret = layer_df["target"].mean()
             current_weights = {
                 str(code): 1.0 / len(layer_df)
                 for code in layer_df["code"].astype(str).tolist()
@@ -612,7 +618,7 @@ for start, valid_start, test_start, end in splits:
     load_model(best_net, model_path, device=device)
     test_preds = predict_model(best_net, test_loader, device=device)
 
-    # 每个测试集中所有样本对应的date，code，pred，next_rn(每行一只股票一天)
+    # 每个测试集中所有样本对应的date，code，pred，target(每行一只股票一天)
     # date只包含测试集中的调仓日期
     # 5.3 组装测试信号表：每行对应一只股票在一个调仓日的预测值和未来收益。
     signal_df = build_signal_frame(
@@ -621,6 +627,11 @@ for start, valid_start, test_start, end in splits:
         target_dates[test_start:end],
         Y_codes[test_start:end],
     )
+    if sample_meta is not None:
+        meta_slice = sample_meta.iloc[test_start:end].reset_index(drop=True)
+        signal_df = pd.concat([signal_df.reset_index(drop=True), meta_slice], axis=1)
+        signal_df = signal_df.loc[:, ~signal_df.columns.duplicated()].copy()
+    signal_df = apply_tradeability_filter(signal_df)
 
     # ------------------------------------------------------------------------
     # 5.4 RankIC 分析：统计当前测试窗口每个调仓日的截面预测相关性。

@@ -16,6 +16,21 @@ def load_dataset(data_dir="."):
     return x, y, dates, codes
 
 
+def load_sample_meta(data_dir="."):
+    path = os.path.join(data_dir, "sample_meta.csv")
+    if not os.path.exists(path):
+        return None
+
+    meta = pd.read_csv(path)
+    for col in ("date", "signal_date", "entry_date", "exit_date"):
+        if col in meta.columns:
+            meta[col] = pd.to_datetime(meta[col], errors="coerce")
+    for col in ("entry_tradable", "exit_tradable", "sample_tradeable"):
+        if col in meta.columns:
+            meta[col] = meta[col].fillna(False).astype(bool)
+    return meta
+
+
 def to_date_array(dates):
     return np.array([pd.Timestamp(date).date() for date in dates])
 
@@ -81,9 +96,17 @@ def build_signal_frame(preds, y_true, target_dates, codes):
             "date": pd.to_datetime(target_dates),
             "code": np.asarray(codes),
             "pred": np.asarray(preds).reshape(-1),
-            "next_rn": np.asarray(y_true).reshape(-1),
+            "target": np.asarray(y_true).reshape(-1),
         }
     )
+
+
+def apply_tradeability_filter(signal_df):
+    df = signal_df.copy()
+    mask = df["sample_tradeable"].fillna(False).astype(bool)
+    if "target" in df.columns:
+        df.loc[~mask, "target"] = np.nan
+    return df
 
 
 def compute_daily_ic(signal_df):
@@ -91,7 +114,7 @@ def compute_daily_ic(signal_df):
     for _, day_df in signal_df.groupby("date"):
         if len(day_df) < 20:
             continue
-        ic, _ = stats.spearmanr(day_df["pred"], day_df["next_rn"])
+        ic, _ = stats.spearmanr(day_df["pred"], day_df["target"])
         daily_ic.append(ic)
     return np.asarray(daily_ic)
 
@@ -126,7 +149,7 @@ def backtest_topk(signal_df, topk=50):
         rows.append(
             {
                 "date": date,
-                "strategy_ret": top_df["next_rn"].mean(),
+                "strategy_ret": top_df["target"].mean(),
             }
         )
     daily_df = pd.DataFrame(rows).sort_values("date").set_index("date")
@@ -135,7 +158,7 @@ def backtest_topk(signal_df, topk=50):
 
 
 def backtest_group_strategy(signal_df, group_num=10):
-    signal_df = signal_df.copy().dropna(subset=["pred", "next_rn"])
+    signal_df = signal_df.copy().dropna(subset=["pred", "target"])
     group_rows = []
 
     for date, day_df in signal_df.groupby("date"):
@@ -151,8 +174,8 @@ def backtest_group_strategy(signal_df, group_num=10):
         day_df["group"] = day_df["group"].clip(1, group_num)
 
         # 某一天每个分组（1到5组）的平均收益率(group，date，group_ret)
-        day_group = day_df.groupby("group", as_index=False)["next_rn"].mean().rename(
-            columns={"next_rn": "group_ret"}
+        day_group = day_df.groupby("group", as_index=False)["target"].mean().rename(
+            columns={"target": "group_ret"}
         )
         day_group["date"] = date
         group_rows.append(day_group)

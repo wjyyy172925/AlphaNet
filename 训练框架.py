@@ -9,16 +9,32 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from models import AlphaNet_v2
-from utils import build_rolling_splits, load_dataset, myDataset, save_model, to_date_array
+from utils import (
+    build_rolling_splits,
+    load_dataset,
+    load_sample_meta,
+    myDataset,
+    save_model,
+    to_date_array,
+)
 
 
 device = torch.device("cpu")
 print("Using CPU.")
 
 X, Y, dates, _ = load_dataset(".")
+sample_meta = load_sample_meta(".")
 print("Shape of X:", X.shape)
 print("Shape of Y:", Y.shape)
 os.makedirs("Models", exist_ok=True)
+
+if sample_meta is not None and len(sample_meta) != len(X):
+    raise ValueError("sample_meta.csv 与 X_fe.npy 样本数不一致")
+
+if sample_meta is not None and "sample_tradeable" in sample_meta.columns:
+    sample_tradeable = sample_meta["sample_tradeable"].fillna(False).to_numpy(dtype=bool)
+else:
+    sample_tradeable = np.ones(len(X), dtype=bool)
 
 target_dates = to_date_array(dates)
 splits = build_rolling_splits(target_dates)
@@ -42,15 +58,30 @@ results = {
 cnt = 0
 
 for start, valid_start, test_start, _ in splits:
+    train_mask = sample_tradeable[start:valid_start]
+    valid_mask = sample_tradeable[valid_start:test_start]
+
+    X_train = X[start:valid_start][train_mask]
+    Y_train = Y[start:valid_start][train_mask]
+    X_valid = X[valid_start:test_start][valid_mask]
+    Y_valid = Y[valid_start:test_start][valid_mask]
+
+    if len(X_train) == 0 or len(X_valid) == 0:
+        print(
+            f"第 {cnt} 个滚动窗口没有足够的可交易样本: "
+            f"train={len(X_train)}, valid={len(X_valid)}"
+        )
+        continue
+
     net = AlphaNet_v2(d=10, stride=10, n=X.shape[1])
     criterion = nn.MSELoss(reduction="sum")
     optimizer = optim.Adam(net.parameters(), lr=lr)
 
-    train_set = myDataset(X[start:valid_start], Y[start:valid_start], is_train=True)
+    train_set = myDataset(X_train, Y_train, is_train=True)
     train_scaler = train_set.get_scaler()
     valid_set = myDataset(
-        X[valid_start:test_start],
-        Y[valid_start:test_start],
+        X_valid,
+        Y_valid,
         scaler=train_scaler,
         is_train=False,
     )

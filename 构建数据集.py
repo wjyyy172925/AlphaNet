@@ -14,18 +14,20 @@ missing_columns = required_columns - set(df_merged.columns)
 if missing_columns:
     raise ValueError(f"缺少必要字段: {sorted(missing_columns)}")
 
-volume_column = "volumn" if "volumn" in df_merged.columns else "volume"
+volume_column = "volume" if "volume" in df_merged.columns else "volumn"
 if volume_column not in df_merged.columns:
-    raise ValueError("缺少成交量字段: volumn 或 volume")
+    raise ValueError("缺少成交量字段: volume 或 volumn")
 
 vwap_column = "vwap" if "vwap" in df_merged.columns else None
+can_buy_column = "can_buy" if "can_buy" in df_merged.columns else None
+can_sell_column = "can_sell" if "can_sell" in df_merged.columns else None
 
-# X 只使用原始特征列，避免把标签和交易元数据混入输入特征。
+# 仅使用原始特征列，避免把标签和交易元数据混入输入特征。
 feature_columns = [
     column for column in df_merged.columns if column not in {"code", "date"}
 ]
 
-# 标签和交易信息：t 日收盘生成信号，t+1 日开盘买入，t+10 日收盘卖出。
+# t 日收盘发信号，t+1 日开盘买入，t+10 日收盘卖出。
 grouped = df_merged.groupby("code", sort=False)
 df_merged["signal_date"] = df_merged["date"]
 df_merged["entry_date"] = grouped["date"].shift(-1)
@@ -33,7 +35,6 @@ df_merged["exit_date"] = grouped["date"].shift(-10)
 df_merged["signal_price"] = df_merged["close"]
 df_merged["entry_price"] = grouped["open"].shift(-1)
 df_merged["exit_price"] = grouped["close"].shift(-10)
-
 df_merged["entry_volume"] = grouped[volume_column].shift(-1)
 df_merged["exit_volume"] = grouped[volume_column].shift(-10)
 
@@ -44,7 +45,6 @@ else:
     df_merged["entry_vwap"] = df_merged["entry_price"]
     df_merged["exit_vwap"] = df_merged["exit_price"]
 
-# 未来 10 个交易日的可执行收益率，避免使用 t 日收盘价直接买入。
 df_merged["target"] = df_merged["exit_price"] / df_merged["entry_price"] - 1
 
 
@@ -53,17 +53,34 @@ def valid_positive_series(series):
     return values.notna() & np.isfinite(values) & (values > 0)
 
 
-# 当前原始文件没有停牌/ST/涨跌停字段，这里先生成基于价格和成交量的可交易性代理。
-df_merged["entry_tradable"] = (
+# entry_tradable: t+1 是否可买；exit_tradable: t+10 是否可卖。
+entry_tradable = (
     valid_positive_series(df_merged["entry_price"])
     & valid_positive_series(df_merged["entry_volume"])
 )
-df_merged["exit_tradable"] = (
+exit_tradable = (
     valid_positive_series(df_merged["exit_price"])
     & valid_positive_series(df_merged["exit_volume"])
 )
 
-# 成交额代理值 = 成交量 * VWAP，用于后续流动性和容量过滤。
+if can_buy_column is not None:
+    entry_tradable = (
+        entry_tradable
+        & grouped[can_buy_column].shift(-1).fillna(0).astype(bool)
+    )
+if can_sell_column is not None:
+    exit_tradable = (
+        exit_tradable
+        & grouped[can_sell_column].shift(-10).fillna(0).astype(bool)
+    )
+
+df_merged["entry_tradable"] = entry_tradable
+df_merged["exit_tradable"] = exit_tradable
+df_merged["sample_tradeable"] = (
+    df_merged["entry_tradable"] & df_merged["exit_tradable"]
+)
+
+# 成交额代理，用于后续容量或流动性过滤。
 df_merged["entry_amount_proxy"] = (
     df_merged["entry_volume"] * df_merged["entry_vwap"]
 )
@@ -82,7 +99,7 @@ def is_valid_target(row):
     return pd.notna(target) and np.isfinite(float(target))
 
 
-# 第一遍只统计样本数量，避免先拼接超大列表导致内存峰值过高。
+# 第一遍只统计样本数，避免先拼接超大列表导致内存峰值过高。
 for code in tqdm(codes, desc="count"):
     df = df_merged[df_merged["code"] == code]
     i = 0
@@ -118,7 +135,6 @@ Y = np.empty(total_samples, dtype=np.float32)
 Y_dates = np.empty(total_samples, dtype="U10")
 Y_codes = np.empty(total_samples, dtype="U32")
 
-# 与 Y 对齐的交易元数据数组。
 entry_dates = np.empty(total_samples, dtype="U10")
 exit_dates = np.empty(total_samples, dtype="U10")
 signal_prices = np.empty(total_samples, dtype=np.float32)
@@ -128,8 +144,9 @@ entry_volumes = np.empty(total_samples, dtype=np.float32)
 exit_volumes = np.empty(total_samples, dtype=np.float32)
 entry_vwaps = np.empty(total_samples, dtype=np.float32)
 exit_vwaps = np.empty(total_samples, dtype=np.float32)
-entry_tradable = np.empty(total_samples, dtype=bool)
-exit_tradable = np.empty(total_samples, dtype=bool)
+entry_tradable_arr = np.empty(total_samples, dtype=bool)
+exit_tradable_arr = np.empty(total_samples, dtype=bool)
+sample_tradeable_arr = np.empty(total_samples, dtype=bool)
 entry_amount_proxy = np.empty(total_samples, dtype=np.float32)
 exit_amount_proxy = np.empty(total_samples, dtype=np.float32)
 
@@ -166,8 +183,9 @@ for code in tqdm(codes, desc="write"):
         exit_volumes[pos] = np.float32(row["exit_volume"])
         entry_vwaps[pos] = np.float32(row["entry_vwap"])
         exit_vwaps[pos] = np.float32(row["exit_vwap"])
-        entry_tradable[pos] = bool(row["entry_tradable"])
-        exit_tradable[pos] = bool(row["exit_tradable"])
+        entry_tradable_arr[pos] = bool(row["entry_tradable"])
+        exit_tradable_arr[pos] = bool(row["exit_tradable"])
+        sample_tradeable_arr[pos] = bool(row["sample_tradeable"])
         entry_amount_proxy[pos] = np.float32(row["entry_amount_proxy"])
         exit_amount_proxy[pos] = np.float32(row["exit_amount_proxy"])
 
@@ -177,14 +195,14 @@ for code in tqdm(codes, desc="write"):
     del df
     gc.collect()
 
-
-# 保存训练数据。
+# X：每个样本的 30 日历史特征，形状大致是 (样本数, 特征数, 30)，样本数是调仓天数
+# Y：对应样本的未来收益率标签，也就是 t+1 买入到 t+10 卖出的收益率
 np.save("X_fe.npy", X)
 np.save("Y_fe.npy", Y)
 np.save("Y_dates.npy", Y_dates)
 np.save("Y_codes.npy", Y_codes)
 
-# 生成一张便于回测直接读取的样本级元数据表。
+# sample_meta.csv的长度是调仓天数
 pd.DataFrame(
     {
         "date": Y_dates,
@@ -199,8 +217,9 @@ pd.DataFrame(
         "exit_volume": exit_volumes,
         "entry_vwap": entry_vwaps,
         "exit_vwap": exit_vwaps,
-        "entry_tradable": entry_tradable,
-        "exit_tradable": exit_tradable,
+        "entry_tradable": entry_tradable_arr,
+        "exit_tradable": exit_tradable_arr,
+        "sample_tradeable": sample_tradeable_arr,
         "entry_amount_proxy": entry_amount_proxy,
         "exit_amount_proxy": exit_amount_proxy,
         "target": Y,
