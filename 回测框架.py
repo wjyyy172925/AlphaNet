@@ -215,8 +215,7 @@ def save_rankic_plots(ic_curve_df, rankic_mean, rankic_std, rankic_ir, positive_
 
 
 # ============================================================================
-# 4. 因子分层回测
-#    按每个调仓日的预测值排序，计算各层收益、长短组合和交易成本情景。
+# 4. TOP VS Benchmark
 # ============================================================================
 def compute_top_vs_benchmark(signal_df, n_layers=5, min_stocks_per_layer=10):
     """Compute TOP portfolio return vs equal-weight benchmark by date."""
@@ -334,7 +333,10 @@ def save_top_vs_benchmark_plots(excess_df):
     plt.savefig("excess_return_drawdown_v2.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
 
-
+# ============================================================================
+# 4. 因子分层回测
+#    按每个调仓日的预测值排序，计算各层收益、长短组合和交易成本情景。
+# ============================================================================
 def layered_test(
     signal_df,
     n_layers=5,
@@ -419,7 +421,7 @@ def layered_test(
 
 
 def compute_layer_stats(ret_df, long_short_ret, rebalance_days=10):
-    """计算各因子层和多空组合的年化统计指标。"""
+    """计算各因子层和多空组合的整段回测区间的年化统计指标。"""
     # 测试集收益是每 rebalance_days 个交易日一个观测值。
     annual_factor = 252 / rebalance_days
     stats_out = {}

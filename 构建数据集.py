@@ -184,21 +184,6 @@ np.save("Y_fe.npy", Y)
 np.save("Y_dates.npy", Y_dates)
 np.save("Y_codes.npy", Y_codes)
 
-# 保存回测需要的交易元数据。
-np.save("entry_dates.npy", entry_dates)
-np.save("exit_dates.npy", exit_dates)
-np.save("signal_prices.npy", signal_prices)
-np.save("entry_prices.npy", entry_prices)
-np.save("exit_prices.npy", exit_prices)
-np.save("entry_volumes.npy", entry_volumes)
-np.save("exit_volumes.npy", exit_volumes)
-np.save("entry_vwaps.npy", entry_vwaps)
-np.save("exit_vwaps.npy", exit_vwaps)
-np.save("entry_tradable.npy", entry_tradable)
-np.save("exit_tradable.npy", exit_tradable)
-np.save("entry_amount_proxy.npy", entry_amount_proxy)
-np.save("exit_amount_proxy.npy", exit_amount_proxy)
-
 # 生成一张便于回测直接读取的样本级元数据表。
 pd.DataFrame(
     {
