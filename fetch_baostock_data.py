@@ -194,6 +194,26 @@ def clean_data(df):
     df = df.drop_duplicates(['code', 'date'])
     df = df.sort_values(['code', 'date']).reset_index(drop=True)
 
+    numeric_cols = [
+        'open', 'high', 'low', 'close', 'preclose',
+        'volume', 'amount', 'turn', 'tradestatus', 'pctChg', 'isST'
+    ]
+    for col in numeric_cols:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    df['volume'] = df['volume'].fillna(0.0)
+    df['amount'] = df['amount'].fillna(0.0)
+    df['turn'] = df['turn'].fillna(0.0)
+    df['pctChg'] = df['pctChg'].fillna(0.0)
+    df['tradestatus'] = df['tradestatus'].fillna(0).astype('int8')
+    df['isST'] = df['isST'].fillna(0).astype('int8')
+
+    df['return'] = df.groupby('code')['close'].pct_change().mul(100).fillna(0.0)
+    df['vwap'] = safe_divide(df['amount'], df['volume'])
+    df['vwap'] = pd.Series(df['vwap'], index=df.index).replace([np.inf, -np.inf], np.nan)
+    df['vwap'] = df['vwap'].fillna(df['close'])
+    df.loc[df['tradestatus'] == 0, 'vwap'] = df.loc[df['tradestatus'] == 0, 'close']
+
     df['limit_pct'] = get_limit_threshold(
         df['code'],
         df['date'],
@@ -220,8 +240,6 @@ def clean_data(df):
         (df['is_tradable'] == 1) &
         (df['is_limit_down'] == 0)
     ).astype('int8')
-
-    df = df.dropna(subset=['open', 'high', 'low', 'close', 'volume', 'amount', 'pctChg','vwap','turn','return'])
     df['date'] = df['date'].dt.strftime('%Y-%m-%d')
     return df
 
@@ -239,7 +257,12 @@ def add_ratio_features(df):
     df['low_high'] = safe_divide(df['low'], df['high'])
     df['vwap_close'] = safe_divide(df['vwap'], df['close'])
     df['turn_volume'] = safe_divide(df['turn'], df['volume'])
-    df = df.dropna().reset_index(drop=True)
+    ratio_cols = [
+        'close_turn', 'open_turn', 'volume_low', 'vwap_high',
+        'low_high', 'vwap_close', 'turn_volume'
+    ]
+    df[ratio_cols] = df[ratio_cols].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    df = df.reset_index(drop=True)
     return df
 
 
