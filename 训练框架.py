@@ -11,6 +11,7 @@ from tqdm import tqdm
 from models import AlphaNet_v2
 from utils import (
     build_rolling_splits,
+    make_run_output_dir,
     load_dataset,
     load_sample_meta,
     myDataset,
@@ -21,12 +22,17 @@ from utils import (
 
 device = torch.device("cpu")
 print("Using CPU.")
+OUTPUT_DIR = make_run_output_dir("Training_Results")
+print(f"Results will be saved to: {OUTPUT_DIR}")
 
 X, Y, dates, _ = load_dataset(".")
 sample_meta = load_sample_meta(".")
 print("Shape of X:", X.shape)
 print("Shape of Y:", Y.shape)
 os.makedirs("Models", exist_ok=True)
+
+# 对Y标准化
+Y = (Y - np.mean(Y)) / np.std(Y+1e-8)
 
 if sample_meta is not None and len(sample_meta) != len(X):
     raise ValueError("sample_meta.csv 与 X_fe.npy 样本数不一致")
@@ -77,14 +83,8 @@ for start, valid_start, test_start, _ in splits:
     criterion = nn.MSELoss(reduction="sum")
     optimizer = optim.Adam(net.parameters(), lr=lr)
 
-    train_set = myDataset(X_train, Y_train, is_train=True)
-    train_scaler = train_set.get_scaler()
-    valid_set = myDataset(
-        X_valid,
-        Y_valid,
-        scaler=train_scaler,
-        is_train=False,
-    )
+    train_set = myDataset(X_train, Y_train)
+    valid_set = myDataset(X_valid, Y_valid)
 
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
     valid_loader = DataLoader(valid_set, batch_size=batch_size, shuffle=False)
@@ -138,7 +138,7 @@ for start, valid_start, test_start, _ in splits:
     results["round"].append(str(cnt))
     results["train"].append(train_loss_lst)
     results["valid"].append(valid_loss_lst)
-    with open("train_results_v2.pickle", "wb") as f:
+    with open(OUTPUT_DIR / "train_results_v2.pickle", "wb") as f:
         pickle.dump(results, f)
 
     cnt += 1

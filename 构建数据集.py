@@ -1,11 +1,23 @@
 import gc
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
+from utils import latest_run_dir, make_run_output_dir
 
-file_name = "df_merged_fe.csv"
+
+OUTPUT_DIR = make_run_output_dir("Dataset_Results")
+SOURCE_DIR = latest_run_dir("Baostock_Results")
+if SOURCE_DIR is not None and (SOURCE_DIR / "df_merged_fe.csv").exists():
+    file_name = SOURCE_DIR / "df_merged_fe.csv"
+else:
+    file_name = Path("df_merged_fe.csv")
+
+print("Input file:", file_name)
+print("Results dir:", OUTPUT_DIR)
+
 df_merged = pd.read_csv(file_name)
 df_merged = df_merged.sort_values(["code", "date"]).reset_index(drop=True)
 
@@ -185,7 +197,16 @@ for code in tqdm(codes, desc="write"):
 
         window = df.iloc[i : i + 30][["date"] + feature_columns]
         window = window.set_index("date").transpose()
-        X[pos] = window.to_numpy(dtype=np.float32, copy=False)
+        window_values = window.to_numpy(dtype=np.float64, copy=True)
+        row_mean = window_values.mean(axis=1, keepdims=True)
+        row_std = window_values.std(axis=1, keepdims=True)
+        non_constant = row_std[:, 0] > 1e-10
+        window_values[non_constant] = (
+            window_values[non_constant] - row_mean[non_constant]
+        ) / row_std[non_constant]
+        window_values[~non_constant] = 0.0
+
+        X[pos] = window_values.astype(np.float32, copy=False)
 
         Y[pos] = np.float32(row["target"])
         Y_dates[pos] = str(row["signal_date"])
@@ -214,10 +235,10 @@ for code in tqdm(codes, desc="write"):
 
 # X：每个样本的 30 日历史特征，形状大致是 (样本数, 特征数, 30)，样本数是调仓天数
 # Y：对应样本的未来收益率标签，也就是 t+1 买入到 t+10 卖出的收益率
-np.save("X_fe.npy", X)
-np.save("Y_fe.npy", Y)
-np.save("Y_dates.npy", Y_dates)
-np.save("Y_codes.npy", Y_codes)
+np.save(OUTPUT_DIR / "X_fe.npy", X)
+np.save(OUTPUT_DIR / "Y_fe.npy", Y)
+np.save(OUTPUT_DIR / "Y_dates.npy", Y_dates)
+np.save(OUTPUT_DIR / "Y_codes.npy", Y_codes)
 
 # sample_meta.csv的长度是调仓天数
 pd.DataFrame(
@@ -241,4 +262,4 @@ pd.DataFrame(
         "exit_amount_proxy": exit_amount_proxy,
         "target": Y,
     }
-).to_csv("sample_meta.csv", index=False)
+).to_csv(OUTPUT_DIR / "sample_meta.csv", index=False)

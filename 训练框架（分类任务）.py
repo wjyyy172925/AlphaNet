@@ -19,12 +19,15 @@ from audtorch.metrics.functional import pearsonr
 from torch.utils.data import DataLoader, Dataset
 
 from sklearn.metrics import f1_score, accuracy_score, matthews_corrcoef, confusion_matrix
+from utils import make_run_output_dir
 
 # 设置设备
 # 因为特征提取层的计算无法完全矩阵化，使用CPU训练更快
 
 device = torch.device("cpu")
 print("Using CPU.")
+OUTPUT_DIR = make_run_output_dir("Training_Results_Cls")
+print(f"Results will be saved to: {OUTPUT_DIR}")
 
 # ------------------------------------------------------------------------
 # ## 数据准备
@@ -271,7 +274,7 @@ for start, end in zip(starts, ends):
     results['train'].append(train_loss_lst)  
     results['valid'].append(valid_loss_lst)  
     results['valid'].append([test_a_i, test_f1_i, test_mcc_i, test_cm_i])
-    with open('train_results_v2_cls.pickle', 'wb') as file:
+    with open(OUTPUT_DIR / 'train_results_v2_cls.pickle', 'wb') as file:
         pickle.dump(results, file)
     
     # 下一轮

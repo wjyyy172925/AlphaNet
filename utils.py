@@ -1,24 +1,98 @@
-import os
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import scipy.stats as stats
 import torch
-from sklearn.preprocessing import StandardScaler
 from torch.utils.data import Dataset
 
 
+_OUTPUT_DIR = Path("res")
+
+
+def make_run_output_dir(base_dir):
+    base_dir = Path(base_dir)
+    base_dir.mkdir(parents=True, exist_ok=True)
+    next_idx = 1
+    for child in base_dir.iterdir():
+        if child.is_dir() and child.name.startswith("run_"):
+            suffix = child.name[4:]
+            if suffix.isdigit():
+                next_idx = max(next_idx, int(suffix) + 1)
+
+    while True:
+        run_dir = base_dir / f"run_{next_idx:03d}"
+        try:
+            run_dir.mkdir()
+            return run_dir
+        except FileExistsError:
+            next_idx += 1
+
+
+def set_output_dir(output_dir):
+    global _OUTPUT_DIR
+    _OUTPUT_DIR = Path(output_dir)
+
+
+def res_path(filename):
+    return _OUTPUT_DIR / filename
+
+
+def latest_run_dir(base_dir):
+    base_dir = Path(base_dir)
+    if not base_dir.exists():
+        return None
+
+    latest_idx = -1
+    latest_dir = None
+    for child in base_dir.iterdir():
+        if child.is_dir() and child.name.startswith("run_"):
+            suffix = child.name[4:]
+            if suffix.isdigit():
+                idx = int(suffix)
+                if idx > latest_idx:
+                    latest_idx = idx
+                    latest_dir = child
+    return latest_dir
+
+
+def resolve_input_path(filename, data_dir=".", fallback_base_dir=None):
+    data_dir = Path(data_dir)
+    if fallback_base_dir is not None and data_dir == Path("."):
+        latest_dir = latest_run_dir(fallback_base_dir)
+        if latest_dir is not None:
+            candidate = latest_dir / filename
+            if candidate.exists():
+                return candidate
+
+    candidate = data_dir / filename
+    if candidate.exists():
+        return candidate
+
+    if fallback_base_dir is not None and data_dir != Path("."):
+        latest_dir = latest_run_dir(fallback_base_dir)
+        if latest_dir is not None:
+            candidate = latest_dir / filename
+            if candidate.exists():
+                return candidate
+
+    return candidate
+
+
 def load_dataset(data_dir="."):
-    x = np.load(os.path.join(data_dir, "X_fe.npy"))
-    y = np.load(os.path.join(data_dir, "Y_fe.npy"))
-    dates = np.load(os.path.join(data_dir, "Y_dates.npy"))
-    codes = np.load(os.path.join(data_dir, "Y_codes.npy"), allow_pickle=True)
+    x = np.load(resolve_input_path("X_fe.npy", data_dir, "Dataset_Results"))
+    y = np.load(resolve_input_path("Y_fe.npy", data_dir, "Dataset_Results"))
+    dates = np.load(resolve_input_path("Y_dates.npy", data_dir, "Dataset_Results"))
+    codes = np.load(
+        resolve_input_path("Y_codes.npy", data_dir, "Dataset_Results"),
+        allow_pickle=True,
+    )
     return x, y, dates, codes
 
 
 def load_sample_meta(data_dir="."):
-    path = os.path.join(data_dir, "sample_meta.csv")
-    if not os.path.exists(path):
+    path = resolve_input_path("sample_meta.csv", data_dir, "Dataset_Results")
+    if not path.exists():
         return None
 
     meta = pd.read_csv(path)
@@ -37,23 +111,9 @@ def to_date_array(dates):
 
 
 class myDataset(Dataset):
-    def __init__(self, X, y, scaler=None, is_train=True):
+    def __init__(self, X, y):
         super().__init__()
-        X = np.asarray(X)
-        y = np.asarray(y)
-        self.origin_shape = X.shape
-
-        X_2d = X.transpose(0, 2, 1).reshape(-1, self.origin_shape[1])
-        if is_train:
-            self.scaler = StandardScaler()
-            X_trans = self.scaler.fit_transform(X_2d)
-        else:
-            if scaler is None:
-                raise ValueError("scaler is required when is_train=False")
-            self.scaler = scaler
-            X_trans = self.scaler.transform(X_2d)
-
-        self.X = torch.as_tensor(X_trans.reshape(self.origin_shape), dtype=torch.float32)
+        self.X = torch.as_tensor(X, dtype=torch.float32)
         self.y = torch.as_tensor(y, dtype=torch.float32)
 
     def __len__(self):
@@ -61,9 +121,6 @@ class myDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.X[idx], self.y[idx]
-
-    def get_scaler(self):
-        return self.scaler
 
 
 def save_model(model, path):

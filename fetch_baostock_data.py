@@ -8,13 +8,16 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
+from utils import make_run_output_dir
+
 
 START_DATE = '2011-01-31'
 END_DATE = '2026-05-31'
-RAW_DIR = Path('data/raw/baostock_daily')
-MERGED_PATH = Path('df_merged.csv')
-FEATURE_PATH = Path('df_merged_fe.csv')
-FAILED_PATH = Path('failed_codes.csv')
+RESULTS_DIR = make_run_output_dir('Baostock_Results')
+RAW_DIR = RESULTS_DIR / 'raw'
+MERGED_PATH = RESULTS_DIR / 'df_merged.csv'
+FEATURE_PATH = RESULTS_DIR / 'df_merged_fe.csv'
+FAILED_PATH = RESULTS_DIR / 'failed_codes.csv'
 RETRY_TIMES = 3
 SLEEP_SECONDS = 0.5
 RETRY_SLEEP_SECONDS = 3
@@ -378,6 +381,7 @@ def add_ratio_features(df):
 def main():
     login_baostock()
     try:
+        print('Results dir:', RESULTS_DIR)
         download_raw_data()
         df_merged = merge_raw_data()
         df_merged = clean_data(df_merged)

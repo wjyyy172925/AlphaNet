@@ -1,6 +1,5 @@
 import os
 import pickle
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -25,18 +24,18 @@ from utils import (
     load_sample_meta,
     myDataset,
     predict_model,
+    make_run_output_dir,
+    res_path,
+    set_output_dir,
     to_date_array,
 )
 
 
 device = torch.device("cpu")
 print("Using CPU.")
-OUTPUT_DIR = Path("res")
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def res_path(filename):
-    return OUTPUT_DIR / filename
+OUTPUT_DIR = make_run_output_dir("Backtest_Results")
+set_output_dir(OUTPUT_DIR)
+print(f"Results will be saved to: {OUTPUT_DIR}")
 
 # ============================================================================
 # 1. 加载数据与初始化回测参数
@@ -613,10 +612,8 @@ def combine_top_benchmark_returns(curves):
 #    RankIC、因子分层和 Top 组策略都只使用当前测试窗口的数据。
 # ============================================================================
 for start, valid_start, test_start, end in splits:
-    # 5.1 使用训练窗口拟合标准化器，并处理当前测试窗口。
-    train_set = myDataset(X[start:valid_start], Y[start:valid_start], is_train=True)
-    train_scaler = train_set.get_scaler()
-    test_set = myDataset(X[test_start:end], Y[test_start:end], scaler=train_scaler, is_train=False)
+    # 5.1 当前数据已在构建数据集阶段完成逐样本逐行标准化，这里直接构造测试集。
+    test_set = myDataset(X[test_start:end], Y[test_start:end])
     test_loader = DataLoader(test_set, batch_size=1000, shuffle=False)
 
     # 5.2 加载当前滚动窗口对应的模型并生成预测值。
@@ -634,6 +631,8 @@ for start, valid_start, test_start, end in splits:
         target_dates[test_start:end],
         Y_codes[test_start:end],
     )
+    signal_df.to_csv(res_path(f"signal_df_round_{cnt}.csv"), index=False)
+
     if sample_meta is not None:
         meta_slice = sample_meta.iloc[test_start:end].reset_index(drop=True)
         signal_df = pd.concat([signal_df.reset_index(drop=True), meta_slice], axis=1)
@@ -644,7 +643,10 @@ for start, valid_start, test_start, end in splits:
     # 5.4 RankIC 分析：统计当前测试窗口每个调仓日的截面预测相关性。
     # ------------------------------------------------------------------------
     ic_df_round = compute_rank_ic_by_date(signal_df)
-    valid_ic = ic_df_round["RankIC"].to_numpy()
+    ic_df_round.to_csv(res_path(f"rankic_round_{cnt}.csv"), index=False)
+    ic_df_round["round"] = cnt
+    if not ic_df_round.empty:
+        ic_curves.append(ic_df_round)
 
     # ------------------------------------------------------------------------
     # 5.5 因子分层回测：只计算含交易成本的各层组合收益。
