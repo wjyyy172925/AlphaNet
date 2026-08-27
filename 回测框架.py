@@ -1,5 +1,6 @@
 import os
 import pickle
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -30,6 +31,12 @@ from utils import (
 
 device = torch.device("cpu")
 print("Using CPU.")
+OUTPUT_DIR = Path("res")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def res_path(filename):
+    return OUTPUT_DIR / filename
 
 # ============================================================================
 # 1. 加载数据与初始化回测参数
@@ -185,7 +192,7 @@ def save_rankic_plots(ic_curve_df, rankic_mean, rankic_std, rankic_ir, positive_
     axes[1].grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plt.savefig("rankic_analysis_v2.png", dpi=150, bbox_inches="tight")
+    plt.savefig(res_path("rankic_analysis_v2.png"), dpi=150, bbox_inches="tight")
     plt.close(fig)
 
     # RankIC 汇总表图片。
@@ -216,7 +223,7 @@ def save_rankic_plots(ic_curve_df, rankic_mean, rankic_std, rankic_ir, positive_
         table[1, column].set_facecolor("#f8f9fa")
     ax.set_title("AlphaNet IC Summary", fontsize=14, fontweight="bold", pad=20)
     plt.tight_layout()
-    plt.savefig("ic_summary_v2.png", dpi=150, bbox_inches="tight")
+    plt.savefig(res_path("ic_summary_v2.png"), dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -303,7 +310,7 @@ def save_top_vs_benchmark_plots(excess_df):
     ax.grid(True, alpha=0.3)
     plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
     plt.tight_layout()
-    plt.savefig("top_vs_benchmark_v2.png", dpi=150, bbox_inches="tight")
+    plt.savefig(res_path("top_vs_benchmark_v2.png"), dpi=150, bbox_inches="tight")
     plt.close(fig)
 
     fig, ax1 = plt.subplots(figsize=(14, 6))
@@ -336,7 +343,7 @@ def save_top_vs_benchmark_plots(excess_df):
     ax1.grid(True, alpha=0.3)
     plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45)
     plt.tight_layout()
-    plt.savefig("excess_return_drawdown_v2.png", dpi=150, bbox_inches="tight")
+    plt.savefig(res_path("excess_return_drawdown_v2.png"), dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 # ============================================================================
@@ -508,7 +515,7 @@ def save_layered_plots(
     ax.grid(True, alpha=0.3)
     plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
     plt.tight_layout()
-    plt.savefig("layered_test_v2.png", dpi=150, bbox_inches="tight")
+    plt.savefig(res_path("layered_test_v2.png"), dpi=150, bbox_inches="tight")
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(14, 5))
@@ -526,7 +533,7 @@ def save_layered_plots(
     ax.grid(True, alpha=0.3)
     plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
     plt.tight_layout()
-    plt.savefig("long_short_v2.png", dpi=150, bbox_inches="tight")
+    plt.savefig(res_path("long_short_v2.png"), dpi=150, bbox_inches="tight")
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(10, 5))
@@ -550,7 +557,7 @@ def save_layered_plots(
             fontsize=9,
         )
     plt.tight_layout()
-    plt.savefig("layer_returns_v2.png", dpi=150, bbox_inches="tight")
+    plt.savefig(res_path("layer_returns_v2.png"), dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -693,7 +700,7 @@ if ic_curves:
 if ic_curves and not ic_curve_df.empty:
     # 计算累计 RankIC、均值、标准差、IC_IR 和正 IC 占比。
     ic_curve_df["cumulative_rankic"] = ic_curve_df["RankIC"].cumsum()
-    ic_curve_df.to_csv("rankic_curve_v2.csv", index=False)
+    ic_curve_df.to_csv(res_path("rankic_curve_v2.csv"), index=False)
 
     rankic_series = ic_curve_df["RankIC"]
     rankic_mean = rankic_series.mean()
@@ -711,7 +718,7 @@ if ic_curves and not ic_curve_df.empty:
             }
         ]
     )
-    ic_summary.to_csv("ic_summary_v2.csv", index=False)
+    ic_summary.to_csv(res_path("ic_summary_v2.csv"), index=False)
 
     print("Overall Mean IC:", rankic_mean * 100, "%")
     print("Overall Std IC:", rankic_std)
@@ -751,10 +758,10 @@ if not all_layer_ret_with_cost.empty:
     layer_curve_output = all_layer_ret_with_cost.add_suffix("_ret_with_cost")
     layer_curve_output["long_short_ret_with_cost"] = all_ls_ret_with_cost
     layer_curve_output["long_short_nav_with_cost"] = all_ls_nav_with_cost
-    layer_curve_output.to_csv("layer_curve_v2.csv")
+    layer_curve_output.to_csv(res_path("layer_curve_v2.csv"))
 
     layer_nav_output = all_layer_nav_with_cost.add_suffix("_nav_with_cost")
-    layer_nav_output.to_csv("layer_nav_v2.csv")
+    layer_nav_output.to_csv(res_path("layer_nav_v2.csv"))
 
     layer_summary_rows = []
     for layer_name, layer_stats in all_layer_stats_with_cost["Layer Stats"].items():
@@ -779,8 +786,8 @@ if not all_layer_ret_with_cost.empty:
         }
     )
 
-    pd.DataFrame(layer_summary_rows).to_csv("layer_summary_v2.csv", index=False)
-    pd.DataFrame(layer_round_results).to_csv("layer_round_results_v2.csv", index=False)
+    pd.DataFrame(layer_summary_rows).to_csv(res_path("layer_summary_v2.csv"), index=False)
+    pd.DataFrame(layer_round_results).to_csv(res_path("layer_round_results_v2.csv"), index=False)
 
     print("\nFactor Layered Test Results")
     print("Cost 0.2%:")
@@ -814,7 +821,7 @@ else:
 top_vs_benchmark_df = combine_top_benchmark_returns(top_benchmark_curves)
 
 if not top_vs_benchmark_df.empty:
-    top_vs_benchmark_df.to_csv("top_vs_benchmark_curve_v2.csv")
+    top_vs_benchmark_df.to_csv(res_path("top_vs_benchmark_curve_v2.csv"))
 
     annual_factor = 252 / REBALANCE_DAYS
     top_ret = top_vs_benchmark_df["top_ret"].dropna()
@@ -850,7 +857,7 @@ if not top_vs_benchmark_df.empty:
                 "n_periods": len(top_vs_benchmark_df),
             }
         ]
-    ).to_csv("top_vs_benchmark_summary_v2.csv", index=False)
+    ).to_csv(res_path("top_vs_benchmark_summary_v2.csv"), index=False)
 
     print("\nTOP vs Benchmark Results")
     print(f"  TOP Annualized Return = {top_ann_ret * 100:.2f}%")
