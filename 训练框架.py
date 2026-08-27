@@ -1,5 +1,6 @@
 import os
 import pickle
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -16,6 +17,7 @@ from utils import (
     load_sample_meta,
     myDataset,
     save_model,
+    standardize_labels_by_date,
     to_date_array,
 )
 
@@ -24,15 +26,15 @@ device = torch.device("cpu")
 print("Using CPU.")
 OUTPUT_DIR = make_run_output_dir("Training_Results")
 print(f"Results will be saved to: {OUTPUT_DIR}")
+MODEL_DIR = Path(os.environ.get("ALPHANET_OUTPUT_ROOT", "Res")) / "Models"
+MODEL_DIR.mkdir(parents=True, exist_ok=True)
+print(f"Models will be saved to: {MODEL_DIR}")
 
 X, Y, dates, _ = load_dataset(".")
 sample_meta = load_sample_meta(".")
 print("Shape of X:", X.shape)
 print("Shape of Y:", Y.shape)
-os.makedirs("Models", exist_ok=True)
 
-# 对Y标准化
-Y = (Y - np.mean(Y)) / np.std(Y+1e-8)
 
 if sample_meta is not None and len(sample_meta) != len(X):
     raise ValueError("sample_meta.csv 与 X_fe.npy 样本数不一致")
@@ -44,6 +46,7 @@ else:
 
 target_dates = to_date_array(dates)
 splits = build_rolling_splits(target_dates)
+Y_cs = standardize_labels_by_date(Y, target_dates, sample_tradeable)
 
 # Sanity check
 net = AlphaNet_v2(d=10, stride=10, n=X.shape[1])
@@ -68,9 +71,9 @@ for start, valid_start, test_start, _ in splits:
     valid_mask = sample_tradeable[valid_start:test_start]
 
     X_train = X[start:valid_start][train_mask]
-    Y_train = Y[start:valid_start][train_mask]
+    Y_train = Y_cs[start:valid_start][train_mask]
     X_valid = X[valid_start:test_start][valid_mask]
-    Y_valid = Y[valid_start:test_start][valid_mask]
+    Y_valid = Y_cs[valid_start:test_start][valid_mask]
 
     if len(X_train) == 0 or len(X_valid) == 0:
         print(
@@ -89,7 +92,7 @@ for start, valid_start, test_start, _ in splits:
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
     valid_loader = DataLoader(valid_set, batch_size=batch_size, shuffle=False)
 
-    model_path = os.path.join("Models", f"{model_name}_{cnt}.pt")
+    model_path = MODEL_DIR / f"{model_name}_{cnt}.pt"
     count = 0
     train_loss_lst, valid_loss_lst = [], []
     best_valid_loss = float("inf")

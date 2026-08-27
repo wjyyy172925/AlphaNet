@@ -128,6 +128,27 @@ def is_valid_target(row):
     return pd.notna(target) and np.isfinite(float(target))
 
 
+def build_window_values(df, start_idx):
+    window = df.iloc[start_idx : start_idx + 30][["date"] + feature_columns]
+    window = window.set_index("date").transpose()
+    window_values = window.to_numpy(dtype=np.float64, copy=True)
+
+    if not np.isfinite(window_values).all():
+        return None
+
+    row_mean = np.mean(window_values, axis=1, keepdims=True)
+    row_std = np.std(window_values, axis=1, keepdims=True)
+    valid_rows = row_std > 1e-10
+    np.divide(
+        window_values - row_mean,
+        row_std,
+        out=window_values,
+        where=valid_rows,
+    )
+
+    return window_values.astype(np.float32, copy=False)
+
+
 # 第一遍只统计样本数，避免先拼接超大列表导致内存峰值过高。
 for code in tqdm(codes, desc="count"):
     df = df_merged[df_merged["code"] == code]
@@ -136,7 +157,8 @@ for code in tqdm(codes, desc="count"):
 
     while i + 39 < len(df):
         row = df.iloc[i + 29]
-        if is_valid_target(row):
+        window_values = build_window_values(df, i)
+        if is_valid_target(row) and window_values is not None:
             date = row["signal_date"]
             date_counts[date] = date_counts.get(date, 0) + 1
             total_samples += 1
@@ -195,18 +217,12 @@ for code in tqdm(codes, desc="write"):
         date = row["signal_date"]
         pos = write_cursor[date]
 
-        window = df.iloc[i : i + 30][["date"] + feature_columns]
-        window = window.set_index("date").transpose()
-        window_values = window.to_numpy(dtype=np.float64, copy=True)
-        row_mean = window_values.mean(axis=1, keepdims=True)
-        row_std = window_values.std(axis=1, keepdims=True)
-        non_constant = row_std[:, 0] > 1e-10
-        window_values[non_constant] = (
-            window_values[non_constant] - row_mean[non_constant]
-        ) / row_std[non_constant]
-        window_values[~non_constant] = 0.0
+        window_values = build_window_values(df, i)
+        if window_values is None:
+            i += 10
+            continue
 
-        X[pos] = window_values.astype(np.float32, copy=False)
+        X[pos] = window_values
 
         Y[pos] = np.float32(row["target"])
         Y_dates[pos] = str(row["signal_date"])

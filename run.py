@@ -1,11 +1,15 @@
 import argparse
+import os
+import re
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+RES_ROOT = PROJECT_ROOT / "Res"
 STAGES = [
     ("dataset", "\u6784\u5efa\u6570\u636e\u96c6.py", "\u6784\u5efa\u6570\u636e\u96c6"),
     ("train", "\u8bad\u7ec3\u6846\u67b6.py", "\u8bad\u7ec3\u6a21\u578b"),
@@ -16,6 +20,11 @@ STAGES = [
 def parse_args():
     parser = argparse.ArgumentParser(description="Run dataset, train, and backtest in order.")
     parser.add_argument("--python", default=sys.executable, help="Python interpreter to use.")
+    parser.add_argument(
+        "--run-name",
+        default=None,
+        help="Name of the run folder under Res/. Defaults to a timestamp.",
+    )
     parser.add_argument("--skip-dataset", action="store_true", help="Skip dataset step.")
     parser.add_argument("--skip-train", action="store_true", help="Skip training step.")
     parser.add_argument("--skip-backtest", action="store_true", help="Skip backtest step.")
@@ -28,6 +37,21 @@ def parse_args():
     return parser.parse_args()
 
 
+def sanitize_run_name(name):
+    safe = re.sub(r'[<>:"/\\|?*]+', "_", name).strip().strip(".")
+    return safe or "run"
+
+
+def resolve_run_root(run_name):
+    base_name = sanitize_run_name(run_name or datetime.now().strftime("run_%Y%m%d_%H%M%S"))
+    candidate = RES_ROOT / base_name
+    suffix = 1
+    while candidate.exists():
+        candidate = RES_ROOT / f"{base_name}_{suffix:03d}"
+        suffix += 1
+    return candidate
+
+
 def should_skip(stage_name, args):
     return {
         "dataset": args.skip_dataset,
@@ -36,7 +60,7 @@ def should_skip(stage_name, args):
     }[stage_name]
 
 
-def run_stage(script_name, display_name, python_executable, dry_run=False):
+def run_stage(script_name, display_name, python_executable, env=None, dry_run=False):
     script_path = PROJECT_ROOT / script_name
     if not script_path.exists():
         raise FileNotFoundError(f"Missing script: {script_path}")
@@ -49,13 +73,21 @@ def run_stage(script_name, display_name, python_executable, dry_run=False):
         return 0, 0.0
 
     start_time = time.time()
-    completed = subprocess.run(command, cwd=PROJECT_ROOT, check=False)
+    completed = subprocess.run(command, cwd=PROJECT_ROOT, env=env, check=False)
     elapsed = time.time() - start_time
     return completed.returncode, elapsed
 
 
 def main():
     args = parse_args()
+    run_root = resolve_run_root(args.run_name)
+    if not args.dry_run:
+        run_root.mkdir(parents=True, exist_ok=True)
+
+    env = os.environ.copy()
+    env["ALPHANET_OUTPUT_ROOT"] = str(run_root)
+
+    print(f"Run root: {run_root}")
     stage_results = []
 
     for stage_name, script_name, display_name in STAGES:
@@ -69,6 +101,7 @@ def main():
                 script_name,
                 display_name,
                 args.python,
+                env=env,
                 dry_run=args.dry_run,
             )
         except FileNotFoundError as exc:

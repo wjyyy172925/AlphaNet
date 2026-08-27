@@ -7,6 +7,8 @@
 # pip install audtorch
 
 import pickle
+import os
+from pathlib import Path
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -28,6 +30,9 @@ device = torch.device("cpu")
 print("Using CPU.")
 OUTPUT_DIR = make_run_output_dir("Training_Results_Cls")
 print(f"Results will be saved to: {OUTPUT_DIR}")
+MODEL_DIR = Path(os.environ.get("ALPHANET_OUTPUT_ROOT", "Res")) / "Models"
+MODEL_DIR.mkdir(parents=True, exist_ok=True)
+print(f"Models will be saved to: {MODEL_DIR}")
 
 # ------------------------------------------------------------------------
 # ## 数据准备
@@ -185,7 +190,7 @@ for start, end in zip(starts, ends):
     test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False)
     
     # 当前训练轮次的模型储存地址
-    model_path = 'Models/' + model_name + '_' + str(cnt) + '.pt'
+    model_path = MODEL_DIR / f"{model_name}_{cnt}.pt"
     
     count = 0
     train_loss_lst, valid_loss_lst = [], []

@@ -1,5 +1,6 @@
 import os
 import pickle
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -36,6 +37,8 @@ print("Using CPU.")
 OUTPUT_DIR = make_run_output_dir("Backtest_Results")
 set_output_dir(OUTPUT_DIR)
 print(f"Results will be saved to: {OUTPUT_DIR}")
+MODEL_DIR = Path(os.environ.get("ALPHANET_OUTPUT_ROOT", "Res")) / "Models"
+print(f"Models will be loaded from: {MODEL_DIR}")
 
 # ============================================================================
 # 1. 加载数据与初始化回测参数
@@ -612,13 +615,14 @@ def combine_top_benchmark_returns(curves):
 #    RankIC、因子分层和 Top 组策略都只使用当前测试窗口的数据。
 # ============================================================================
 for start, valid_start, test_start, end in splits:
-    # 5.1 当前数据已在构建数据集阶段完成逐样本逐行标准化，这里直接构造测试集。
     test_set = myDataset(X[test_start:end], Y[test_start:end])
     test_loader = DataLoader(test_set, batch_size=1000, shuffle=False)
+    # 5.1 当前数据已在构建数据集阶段完成逐样本逐行标准化，这里直接构造测试集。
+    test_loader = DataLoader(test_set, batch_size=1000, shuffle=False)
 
-    # 5.2 加载当前滚动窗口对应的模型并生成预测值。
     best_net = AlphaNet_v2(d=10, stride=10, n=X.shape[1])
-    model_path = os.path.join("Models", f"{model_name}_{cnt}.pt")
+    # 5.2 加载当前滚动窗口对应的模型并生成预测值。
+    model_path = MODEL_DIR / f"{model_name}_{cnt}.pt"
     load_model(best_net, model_path, device=device)
     test_preds = predict_model(best_net, test_loader, device=device)
 

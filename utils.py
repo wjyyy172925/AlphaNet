@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import numpy as np
@@ -7,11 +8,16 @@ import torch
 from torch.utils.data import Dataset
 
 
-_OUTPUT_DIR = Path("res")
+_OUTPUT_DIR = Path("Res")
 
 
-def make_run_output_dir(base_dir):
-    base_dir = Path(base_dir)
+def get_output_root():
+    return Path(os.environ.get("ALPHANET_OUTPUT_ROOT", "Res"))
+
+
+def make_run_output_dir(base_dir, root_dir=None):
+    base_root = Path(root_dir) if root_dir is not None else get_output_root()
+    base_dir = base_root / Path(base_dir)
     base_dir.mkdir(parents=True, exist_ok=True)
     next_idx = 1
     for child in base_dir.iterdir():
@@ -38,8 +44,9 @@ def res_path(filename):
     return _OUTPUT_DIR / filename
 
 
-def latest_run_dir(base_dir):
-    base_dir = Path(base_dir)
+def latest_run_dir(base_dir, root_dir=None):
+    base_root = Path(root_dir) if root_dir is not None else get_output_root()
+    base_dir = base_root / Path(base_dir)
     if not base_dir.exists():
         return None
 
@@ -103,6 +110,29 @@ def load_sample_meta(data_dir="."):
         if col in meta.columns:
             meta[col] = meta[col].fillna(False).astype(bool)
     return meta
+
+
+def standardize_labels_by_date(y, target_dates, tradeable_mask=None, eps=1e-8):
+    y = np.asarray(y, dtype=np.float32).reshape(-1)
+    target_dates = np.asarray(target_dates)
+
+    if tradeable_mask is None:
+        tradeable_mask = np.ones(len(y), dtype=bool)
+    else:
+        tradeable_mask = np.asarray(tradeable_mask, dtype=bool)
+
+    y_std = y.copy()
+    for date in np.unique(target_dates[tradeable_mask]):
+        idx = (target_dates == date) & tradeable_mask
+        if not np.any(idx):
+            continue
+
+        values = y[idx]
+        mean = np.mean(values)
+        std = np.std(values)
+        y_std[idx] = (values - mean) / (std + eps)
+
+    return y_std
 
 
 def to_date_array(dates):
