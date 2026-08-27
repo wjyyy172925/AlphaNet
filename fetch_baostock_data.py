@@ -11,7 +11,7 @@ from tqdm import tqdm
 from utils import make_run_output_dir
 
 
-START_DATE = '2011-01-31'
+START_DATE = '2015-01-01'
 END_DATE = '2026-05-31'
 RESULTS_DIR = make_run_output_dir('Baostock_Results')
 RAW_DIR = RESULTS_DIR / 'raw'
@@ -203,7 +203,7 @@ def get_stock_daily(code):
     raw_df = raw_df[['code', 'date', 'close', 'preclose', 'volume', 'turn', 'amount', 'tradestatus', 'pctChg', 'isST']]
     df = adj_df.merge(raw_df, on=['code', 'date'], how='inner', suffixes=('', '_raw'))
     df = df.sort_values(['code', 'date']).reset_index(drop=True)
-    df['return'] = (df.groupby('code')['close'].pct_change() * 100)
+    df['return'] = df.groupby('code')['close'].pct_change()
     adjust_factor = safe_divide(df['close'], df['close_raw'])
     df['vwap'] = safe_divide(df['amount'], df['volume']) * adjust_factor
     df = df[['code', 'date', 'open', 'close', 'high', 'low', 'volume', 'amount','vwap', 'return', 'turn', 'preclose', 'tradestatus', 'pctChg', 'isST']]
@@ -316,15 +316,17 @@ def clean_data(df):
     df['volume'] = df['volume'].fillna(0.0)
     df['amount'] = df['amount'].fillna(0.0)
     df['turn'] = df['turn'].fillna(0.0)
+    # 不复权收益率，用于判断涨跌停，从而生成can_buy/can_sell
     df['pctChg'] = df['pctChg'].fillna(0.0)
     df['tradestatus'] = df['tradestatus'].fillna(0).astype('int8')
     df['isST'] = df['isST'].fillna(0).astype('int8')
-
-    df['return'] = df.groupby('code')['close'].pct_change().mul(100).fillna(0.0)
-    df['vwap'] = safe_divide(df['amount'], df['volume'])
+    # 后复权收益率
+    df['return'] = df.groupby('code')['close'].pct_change().fillna(0.0)
+    df['vwap'] = pd.to_numeric(df['vwap'], errors='coerce')
     df['vwap'] = pd.Series(df['vwap'], index=df.index).replace([np.inf, -np.inf], np.nan)
-    df['vwap'] = df['vwap'].fillna(df['close'])
-    df.loc[df['tradestatus'] == 0, 'vwap'] = df.loc[df['tradestatus'] == 0, 'close']
+    # 如果该周期无成交，沿用上一根K线的VWAP 
+    df['vwap'] = df['vwap'].ffill()
+    df.loc[df['tradestatus'] == 0, 'vwap'] = np.nan
 
     df['limit_pct'] = get_limit_threshold(
         df['code'],
@@ -374,6 +376,7 @@ def add_ratio_features(df):
         'low_high', 'vwap_close', 'turn_volume'
     ]
     df[ratio_cols] = df[ratio_cols].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    df[ratio_cols] = df[ratio_cols].clip(lower=df[ratio_cols].quantile(0.01), upper=df[ratio_cols].quantile(0.99), axis=1)
     df = df.reset_index(drop=True)
     return df
 
@@ -393,7 +396,7 @@ def main():
         print('feature data shape:', df_merged_fe.shape)
         print('save done:', MERGED_PATH)
         print('save done:', FEATURE_PATH)
-    finally:
+    finally: 
         logout_baostock()
 
 

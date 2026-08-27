@@ -110,12 +110,8 @@ df_merged["sample_tradeable"] = (
 )
 
 # 成交额代理，用于后续容量或流动性过滤。
-df_merged["entry_amount_proxy"] = (
-    df_merged["entry_volume"] * df_merged["entry_vwap"]
-)
-df_merged["exit_amount_proxy"] = (
-    df_merged["exit_volume"] * df_merged["exit_vwap"]
-)
+df_merged["entry_amount_proxy"] = grouped["amount"].shift(-1)
+df_merged["exit_amount_proxy"] = grouped["amount"].shift(-10)
 
 codes = df_merged["code"].unique()
 date_counts = {}
