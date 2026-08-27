@@ -1,7 +1,9 @@
 from pathlib import Path
+import socket
 import time
 
 import baostock as bs
+import baostock.common.context as bs_context
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -16,6 +18,9 @@ FAILED_PATH = Path('failed_codes.csv')
 RETRY_TIMES = 3
 SLEEP_SECONDS = 0.5
 RETRY_SLEEP_SECONDS = 3
+LOGIN_RETRY_TIMES = 6
+MAX_RETRY_SLEEP_SECONDS = 60
+SOCKET_TIMEOUT_SECONDS = 30
 LIMIT_TOLERANCE_PCT = 0.5
 
 # BaoStock adjustflag: 1=后复权, 2=前复权, 3=不复权
@@ -37,38 +42,106 @@ RAW_REQUIRED_COLUMNS = {
 }
 
 
+class BaoStockQueryError(RuntimeError):
+    """Raised when BaoStock returns a query or network error."""
+
+
+def is_no_data_error(error):
+    return 'returned no data' in str(error).lower()
+
+
+def get_missing_columns(columns, required_columns):
+    return sorted(set(required_columns) - set(columns))
+
+
+def ensure_required_columns(columns, required_columns, source_name):
+    missing_columns = get_missing_columns(columns, required_columns)
+    if missing_columns:
+        raise ValueError(f'{source_name} missing columns: {missing_columns}')
+
+
+def close_baostock_socket():
+    """Close and clear BaoStock's shared socket after a broken connection."""
+    current_socket = getattr(bs_context, 'default_socket', None)
+    if current_socket is not None:
+        try:
+            current_socket.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+        try:
+            current_socket.close()
+        except Exception:
+            pass
+    bs_context.default_socket = None
+
+
+def retry_sleep(attempt):
+    delay = min(RETRY_SLEEP_SECONDS * (2 ** (attempt - 1)), MAX_RETRY_SLEEP_SECONDS)
+    print(f'wait {delay}s before retry')
+    time.sleep(delay)
+
+
 def login_baostock():
-    lg = bs.login()
-    if lg.error_code != '0':
-        raise Exception(lg.error_msg)
-    print('baostock login success')
+    last_error = 'unknown login error'
+    for attempt in range(1, LOGIN_RETRY_TIMES + 1):
+        close_baostock_socket()
+        try:
+            lg = bs.login()
+            if str(lg.error_code) == '0':
+                current_socket = getattr(bs_context, 'default_socket', None)
+                if current_socket is not None:
+                    current_socket.settimeout(SOCKET_TIMEOUT_SECONDS)
+                print('baostock login success')
+                return
+            last_error = lg.error_msg
+        except Exception as e:
+            last_error = f'{type(e).__name__}: {e}'
+
+        print(f'baostock login failed ({attempt}/{LOGIN_RETRY_TIMES}): {last_error}')
+        close_baostock_socket()
+        if attempt < LOGIN_RETRY_TIMES:
+            retry_sleep(attempt)
+
+    raise RuntimeError(
+        f'BaoStock login failed after {LOGIN_RETRY_TIMES} attempts: {last_error}'
+    )
 
 
 def logout_baostock():
-    bs.logout()
+    try:
+        if getattr(bs_context, 'default_socket', None) is not None:
+            bs.logout()
+    except Exception as e:
+        print('baostock logout warning:', e)
+    finally:
+        close_baostock_socket()
 
 
 def reconnect_baostock():
-    try:
-        logout_baostock()
-    except Exception:
-        pass
-    time.sleep(RETRY_SLEEP_SECONDS)
+    close_baostock_socket()
     login_baostock()
 
 
 def get_all_a_stocks():
     print('get A stock pool...')
-    rs = bs.query_stock_basic()
-    if rs.error_code != '0':
-        raise Exception(rs.error_msg)
-    data_list = []
-    while rs.next():
-        data_list.append(rs.get_row_data())
-    df = pd.DataFrame(data_list, columns=rs.fields)
-    df = df[df['type'] == '1']
-    df = df[df['code'].str.startswith(('sh.6', 'sz.0', 'sz.3'))]
-    return df['code'].tolist()
+    for attempt in range(1, RETRY_TIMES + 1):
+        try:
+            rs = bs.query_stock_basic()
+            if str(rs.error_code) != '0':
+                raise BaoStockQueryError(rs.error_msg)
+            data_list = []
+            while rs.next():
+                data_list.append(rs.get_row_data())
+            df = pd.DataFrame(data_list, columns=rs.fields)
+            df = df[df['type'] == '1']
+            df = df[df['code'].str.startswith(('sh.6', 'sz.0', 'sz.3'))]
+            return df['code'].tolist()
+        except Exception as e:
+            print(f'get stock pool failed ({attempt}/{RETRY_TIMES}): {e}')
+            if attempt == RETRY_TIMES:
+                raise
+            retry_sleep(attempt)
+            reconnect_baostock()
 
 # preclose前一日收盘价，amount成交金额，turn换手率（当日成交量占流通股本的比例），tradestatus交易状态(1正常交易 0停牌)，pctChg涨跌幅
 def query_stock_daily(code, adjustflag):
@@ -84,12 +157,19 @@ def query_stock_daily(code, adjustflag):
         frequency='d',
         adjustflag=adjustflag,
     )
-    if rs.error_code != '0':
-        print(code, adjustflag, 'failed:', rs.error_msg)
-        return None
+    if str(rs.error_code) != '0':
+        raise BaoStockQueryError(
+            f'{code} adjustflag={adjustflag}: {rs.error_msg}'
+        )
     data_list = []
-    while rs.next():
-        data_list.append(rs.get_row_data())
+    try:
+        while rs.next():
+            data_list.append(rs.get_row_data())
+    except Exception as e:
+        raise BaoStockQueryError(
+            f'{code} adjustflag={adjustflag}: receive loop failed: '
+            f'{type(e).__name__}: {e}'
+        ) from e
     if not data_list:
         return None
     df = pd.DataFrame(data_list, columns=rs.fields)
@@ -123,7 +203,7 @@ def get_stock_daily(code):
     df['return'] = (df.groupby('code')['close'].pct_change() * 100)
     adjust_factor = safe_divide(df['close'], df['close_raw'])
     df['vwap'] = safe_divide(df['amount'], df['volume']) * adjust_factor
-    df = df[['code', 'date', 'open', 'close', 'high', 'low', 'volume', 'vwap', 'return', 'turn', 'preclose', 'tradestatus', 'pctChg', 'isST']]
+    df = df[['code', 'date', 'open', 'close', 'high', 'low', 'volume', 'amount','vwap', 'return', 'turn', 'preclose', 'tradestatus', 'pctChg', 'isST']]
     return df
 
 
@@ -145,19 +225,37 @@ def download_raw_data():
         if output_path.exists() and raw_file_has_required_columns(output_path):
             continue
         success = False
-        for i in range(RETRY_TIMES):
+        temp_path = output_path.with_name(f'{output_path.name}.part')
+        for attempt in range(1, RETRY_TIMES + 1):
             try:
                 df = get_stock_daily(code)
-                if df is not None:
-                    df.to_csv(output_path, index=False)
-                    success = True
-                    break
+                if df is None:
+                    raise BaoStockQueryError(f'{code} returned no data')
+                ensure_required_columns(df.columns, RAW_REQUIRED_COLUMNS, f'{code} dataframe')
+                df.to_csv(temp_path, index=False)
+                if not raw_file_has_required_columns(temp_path):
+                    raise ValueError(f'{temp_path} missing required columns after save')
+                temp_path.replace(output_path)
+                success = True
+                break
             except Exception as e:
-                print(code, e)
-            print(code, 'retry', i + 1)
-            reconnect_baostock()
+                print(f'{code} attempt {attempt}/{RETRY_TIMES} failed:', e)
+                try:
+                    temp_path.unlink()
+                except FileNotFoundError:
+                    pass
+                if is_no_data_error(e):
+                    print(f'{code} has no historical daily data, skip remaining retries')
+                    break
+                if attempt < RETRY_TIMES:
+                    retry_sleep(attempt)
+                    try:
+                        print(f'{code} reconnecting...')
+                        reconnect_baostock()
+                    except Exception as reconnect_error:
+                        print('reconnect failed:', reconnect_error)
         if not success:
-            print(code, 'failed after 3 retries')
+            print(code, f'failed after {RETRY_TIMES} retries')
             failed_codes.append(code)
         time.sleep(SLEEP_SECONDS)
     pd.DataFrame({'code': failed_codes}).to_csv(FAILED_PATH, index=False)
@@ -168,12 +266,23 @@ def download_raw_data():
 def merge_raw_data():
     all_files = sorted(RAW_DIR.glob('*.csv'))
     all_data = []
+    invalid_files = []
     for file in tqdm(all_files, desc='merge raw data'):
+        if not raw_file_has_required_columns(file):
+            invalid_files.append(str(file))
+            continue
         df = pd.read_csv(file)
         all_data.append(df)
+    if invalid_files:
+        preview = invalid_files[:5]
+        raise ValueError(
+            f'{len(invalid_files)} raw files are missing required columns (including amount). '
+            f'Examples: {preview}'
+        )
     if not all_data:
         raise Exception('no data downloaded')
     result = pd.concat(all_data, ignore_index=True)
+    ensure_required_columns(result.columns, RAW_REQUIRED_COLUMNS, 'merged raw data')
     return result
 
 

@@ -22,10 +22,27 @@ vwap_column = "vwap" if "vwap" in df_merged.columns else None
 can_buy_column = "can_buy" if "can_buy" in df_merged.columns else None
 can_sell_column = "can_sell" if "can_sell" in df_merged.columns else None
 
-# 仅使用原始特征列，避免把标签和交易元数据混入输入特征。
+# 训练时只使用指定特征列。
 feature_columns = [
-    column for column in df_merged.columns if column not in {"code", "date"}
+    "open",
+    "close",
+    "high",
+    "low",
+    "volume",
+    "vwap",
+    "return",
+    "turn",
+    "close_turn",
+    "open_turn",
+    "volume_low",
+    "vwap_high",
+    "low_high",
+    "vwap_close",
+    "turn_volume",
 ]
+missing_features = [c for c in feature_columns if c not in df_merged.columns]
+if missing_features:
+    raise ValueError(f"缺少训练特征字段: {missing_features}")
 
 # t 日收盘发信号，t+1 日开盘买入，t+10 日收盘卖出。
 grouped = df_merged.groupby("code", sort=False)

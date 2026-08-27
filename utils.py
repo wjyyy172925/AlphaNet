@@ -32,7 +32,8 @@ def load_sample_meta(data_dir="."):
 
 
 def to_date_array(dates):
-    return np.array([pd.Timestamp(date).date() for date in dates])
+    dates = np.asarray(dates).astype(str)
+    return pd.to_datetime(dates).date
 
 
 class myDataset(Dataset):

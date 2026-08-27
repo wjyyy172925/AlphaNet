@@ -45,7 +45,7 @@ net(torch.tensor(X[:5]).float())
 
 torch.manual_seed(42)
 lr = 0.0001
-n_epoch = 10
+n_epoch = 50
 batch_size = 1000
 model_name = "alphanet_v2"
 
