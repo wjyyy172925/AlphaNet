@@ -37,7 +37,29 @@ print("Using CPU.")
 OUTPUT_DIR = make_run_output_dir("Backtest_Results")
 set_output_dir(OUTPUT_DIR)
 print(f"Results will be saved to: {OUTPUT_DIR}")
-MODEL_DIR = Path(os.environ.get("ALPHANET_OUTPUT_ROOT", "Res")) / "Models"
+model_name = "alphanet_v2"
+
+
+def resolve_model_run_dir(model_name):
+    model_root = Path(os.environ.get("ALPHANET_OUTPUT_ROOT", "Res")) / "Models"
+    if not model_root.exists():
+        raise FileNotFoundError(f"未找到模型目录: {model_root}")
+
+    run_dirs = []
+    for child in model_root.iterdir():
+        if child.is_dir() and child.name.startswith("run_"):
+            suffix = child.name[4:]
+            if suffix.isdigit():
+                run_dirs.append((int(suffix), child))
+
+    for _, run_dir in sorted(run_dirs, reverse=True):
+        if (run_dir / f"{model_name}_0.pt").exists():
+            return run_dir
+
+    raise FileNotFoundError(f"未找到可用于回测的模型 run 目录: {model_root}")
+
+
+MODEL_DIR = resolve_model_run_dir(model_name)
 print(f"Models will be loaded from: {MODEL_DIR}")
 
 # ============================================================================
@@ -56,7 +78,6 @@ target_dates = to_date_array(dates)
 splits = build_rolling_splits(target_dates)
 
 group_num = 10
-model_name = "alphanet_v2"
 group_results = []
 group_curves = []
 strategy_curves = []

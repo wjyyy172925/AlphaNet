@@ -1,5 +1,6 @@
+import numpy as np
 import pandas as pd
-df = pd.read_csv('df_merged.csv', nrows=1)
-print(df.iloc[0]["low"])
-print(df.iloc[0]["high"])
-print(df.iloc[0]["vwap"])
+
+df = pd.read_csv(r'E:\Quant\AlphaNet\Res\Baostock_Results\run_001\df_merged_fe.csv')
+print(df.columns)
+print(df.shape)

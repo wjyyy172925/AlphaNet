@@ -1,6 +1,5 @@
-import os
 import pickle
-from pathlib import Path
+import time
 
 import numpy as np
 import torch
@@ -24,10 +23,10 @@ from utils import (
 
 device = torch.device("cpu")
 print("Using CPU.")
+_script_start_time = time.perf_counter()
 OUTPUT_DIR = make_run_output_dir("Training_Results")
 print(f"Results will be saved to: {OUTPUT_DIR}")
-MODEL_DIR = Path(os.environ.get("ALPHANET_OUTPUT_ROOT", "Res")) / "Models"
-MODEL_DIR.mkdir(parents=True, exist_ok=True)
+MODEL_DIR = make_run_output_dir("Models")
 print(f"Models will be saved to: {MODEL_DIR}")
 
 X, Y, dates, _ = load_dataset(".")
@@ -147,3 +146,5 @@ for start, valid_start, test_start, _ in splits:
     cnt += 1
 
 print("Training complete.")
+elapsed = time.perf_counter() - _script_start_time
+print(f"Training finished in {elapsed:.2f}s")

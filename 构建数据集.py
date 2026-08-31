@@ -1,5 +1,5 @@
 import gc
-from pathlib import Path
+import time
 
 import numpy as np
 import pandas as pd
@@ -7,16 +7,18 @@ from tqdm import tqdm
 
 from utils import latest_run_dir, make_run_output_dir
 
-
 OUTPUT_DIR = make_run_output_dir("Dataset_Results")
 SOURCE_DIR = latest_run_dir("Baostock_Results")
-if SOURCE_DIR is not None and (SOURCE_DIR / "df_merged_fe.csv").exists():
-    file_name = SOURCE_DIR / "df_merged_fe.csv"
-else:
-    file_name = Path("df_merged_fe.csv")
+if SOURCE_DIR is None:
+    raise FileNotFoundError("未找到 Res/Baostock_Results 下的最新 run 目录，请先运行抓取脚本")
+
+file_name = SOURCE_DIR / "df_merged.csv"
+if not file_name.exists():
+    raise FileNotFoundError(f"未找到特征数据文件: {file_name}")
 
 print("Input file:", file_name)
 print("Results dir:", OUTPUT_DIR)
+_script_start_time = time.perf_counter()
 
 df_merged = pd.read_csv(file_name)
 df_merged = df_merged.sort_values(["code", "date"]).reset_index(drop=True)
@@ -44,13 +46,13 @@ feature_columns = [
     "vwap",
     "return",
     "turn",
-    "close_turn",
-    "open_turn",
-    "volume_low",
-    "vwap_high",
-    "low_high",
-    "vwap_close",
-    "turn_volume",
+    # "close_turn",
+    # "open_turn",
+    # "volume_low",
+    # "vwap_high",
+    # "low_high",
+    # "vwap_close",
+    # "turn_volume",
 ]
 missing_features = [c for c in feature_columns if c not in df_merged.columns]
 if missing_features:
@@ -247,6 +249,9 @@ for code in tqdm(codes, desc="write"):
 
 # X：每个样本的 30 日历史特征，形状大致是 (样本数, 特征数, 30)，样本数是调仓天数
 # Y：对应样本的未来收益率标签，也就是 t+1 买入到 t+10 卖出的收益率
+print("X shape:", X.shape)
+print("Y shape:", Y.shape)
+
 np.save(OUTPUT_DIR / "X_fe.npy", X)
 np.save(OUTPUT_DIR / "Y_fe.npy", Y)
 np.save(OUTPUT_DIR / "Y_dates.npy", Y_dates)
@@ -275,3 +280,6 @@ pd.DataFrame(
         "target": Y,
     }
 ).to_csv(OUTPUT_DIR / "sample_meta.csv", index=False)
+
+elapsed = time.perf_counter() - _script_start_time
+print(f"Dataset build finished in {elapsed:.2f}s")
